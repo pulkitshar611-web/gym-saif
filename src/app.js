@@ -10,7 +10,7 @@ const app = express();
 
 // Middleware
 app.use(cors({
-    origin: ['http://localhost:5173', 'https://gym-management-001.netlify.app', 'http://gym-newss.kiaantechnology.com'],
+    origin: ['http://localhost:5173', 'https://gym-management-001.netlify.app', 'https://gym-newss.kiaantechnology.com'],
     credentials: true
 }));
 app.use(express.json({ limit: '50mb' }));
