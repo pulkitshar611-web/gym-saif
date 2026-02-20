@@ -43,6 +43,8 @@ model Tenant {
   expenses      Expense[]
   payroll       Payroll[]
   settings      TenantSettings?
+
+  @@map("tenant")
 }
 
 model User {
@@ -69,6 +71,8 @@ model User {
   assignedLeads        Lead[]          @relation("LeadAssignee")
   attendances          Attendance[]
   classes              Class[]
+
+  @@map("user")
 }
 
 // --- SUPERADMIN MODELS ---
@@ -86,6 +90,8 @@ model SaaSPlan {
   status      String   @default("Active")
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
+
+  @@map("saasplan")
 }
 
 model Subscription {
@@ -97,6 +103,8 @@ model Subscription {
   endDate       DateTime
   status        String   // Active, Expired, Due
   paymentStatus String   // Paid, Pending, Overdue
+
+  @@map("subscription")
 }
 
 model AuditLog {
@@ -108,6 +116,8 @@ model AuditLog {
   module          String
   ip              String?
   createdAt       DateTime @default(now())
+
+  @@map("auditlog")
 }
 
 model WebhookLog {
@@ -119,6 +129,8 @@ model WebhookLog {
   statusCode  Int
   payload     Json?
   createdAt     DateTime @default(now())
+
+  @@map("webhooklog")
 }
 
 model SaaSSettings {
@@ -144,6 +156,8 @@ model SaaSSettings {
   advanceBookingDays Int     @default(7)
   penaltyEnabled  Boolean  @default(true)
   penaltyCredits  Int      @default(1)
+
+  @@map("saassettings")
 }
 
 model SaasPayment {
@@ -155,6 +169,8 @@ model SaasPayment {
   method        String
   status        String   @default("Success")
   date          DateTime @default(now())
+
+  @@map("saaspayment")
 }
 
 model Device {
@@ -165,6 +181,8 @@ model Device {
   message     String?
   tenantId    Int?     // Can be global or tenant-specific
   lastSeen    DateTime @default(now())
+
+  @@map("device")
 }
 
 // --- ADMIN / BRANCH MODELS ---
@@ -201,6 +219,8 @@ model Member {
   bookings        Booking[]
   wallet          Wallet?
   progress        MemberProgress[]
+
+  @@map("member")
 }
 
 model MembershipPlan {
@@ -225,6 +245,8 @@ model MembershipPlan {
   updatedAt           DateTime @updatedAt
 
   members             Member[]
+
+  @@map("membershipplan")
 }
 
 model Lead {
@@ -252,6 +274,8 @@ model Lead {
   
   notes           String?  @db.Text
   nextFollowUp    DateTime?
+
+  @@map("lead")
 }
 
 model FollowUp {
@@ -262,6 +286,8 @@ model FollowUp {
   status      String
   nextDate    DateTime?
   createdAt   DateTime @default(now())
+
+  @@map("followup")
 }
 
 model Class {
@@ -279,6 +305,8 @@ model Class {
   location        String?
   requiredBenefit String?
   bookings        Booking[]
+
+  @@map("class")
 }
 
 model Booking {
@@ -289,6 +317,8 @@ model Booking {
   class       Class    @relation(fields: [classId], references: [id])
   date        DateTime
   status      String   @default("Upcoming") // Upcoming, Completed, Cancelled
+
+  @@map("booking")
 }
 
 model Inventory {
@@ -301,6 +331,8 @@ model Inventory {
   unit            String
   minThreshold    Int      @default(5)
   status          String   @default("In Stock")
+
+  @@map("inventory")
 }
 
 model Locker {
@@ -310,6 +342,8 @@ model Locker {
   number          String
   status          String   @default("Available") // Available, Occupied, Under Maintenance
   assignedToId    Int?
+
+  @@map("locker")
 }
 
 model Equipment {
@@ -328,6 +362,8 @@ model Equipment {
   lastService     DateTime?
   nextService     DateTime?
   maintenance     MaintenanceRequest[]
+
+  @@map("equipment")
 }
 
 model MaintenanceRequest {
@@ -338,6 +374,8 @@ model MaintenanceRequest {
   priority        String   // Low, Medium, High
   status          String   @default("Pending")
   createdAt       DateTime @default(now())
+
+  @@map("maintenancerequest")
 }
 
 model Invoice {
@@ -351,6 +389,8 @@ model Invoice {
   status          String   @default("Unpaid") // Paid, Unpaid, Partial, Cancelled
   dueDate         DateTime
   paidDate        DateTime?
+
+  @@map("invoice")
 }
 
 model Expense {
@@ -362,6 +402,8 @@ model Expense {
   amount          Decimal  @db.Decimal(10, 2)
   date            DateTime
   status          String   @default("Paid")
+
+  @@map("expense")
 }
 
 model Payroll {
@@ -373,6 +415,8 @@ model Payroll {
   month           Int
   year            Int
   status          String   @default("Pending") // Pending, Processed
+
+  @@map("payroll")
 }
 
 model Attendance {
@@ -382,6 +426,8 @@ model Attendance {
   checkIn         DateTime @default(now())
   checkOut        DateTime?
   type            String   // Member, Staff, Trainer
+
+  @@map("attendance")
 }
 
 model Task {
@@ -394,6 +440,8 @@ model Task {
   priority        String
   dueDate         DateTime
   status          String   @default("Pending")
+
+  @@map("task")
 }
 
 model Wallet {
@@ -402,6 +450,8 @@ model Wallet {
   member          Member   @relation(fields: [memberId], references: [id])
   balance         Decimal  @db.Decimal(10, 2) @default(0)
   transactions    Transaction[]
+
+  @@map("wallet")
 }
 
 model Transaction {
@@ -412,6 +462,8 @@ model Transaction {
   type            String   // Credit, Debit
   description     String?
   createdAt       DateTime @default(now())
+
+  @@map("transaction")
 }
 
 model MemberProgress {
@@ -422,6 +474,8 @@ model MemberProgress {
   bodyFat         Decimal? @db.Decimal(5, 2)
   notes           String?
   date            DateTime @default(now())
+
+  @@map("memberprogress")
 }
 
 model Announcement {
@@ -431,6 +485,8 @@ model Announcement {
   authorId        Int
   author          User     @relation(fields: [authorId], references: [id])
   createdAt       DateTime @default(now())
+
+  @@map("announcement")
 }
 
 model TenantSettings {
@@ -441,4 +497,6 @@ model TenantSettings {
   timezone        String   @default("UTC")
   currency        String   @default("USD")
   whatsappEnabled Boolean  @default(false)
+
+  @@map("tenantsettings")
 }
