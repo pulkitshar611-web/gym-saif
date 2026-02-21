@@ -466,6 +466,52 @@ const getDevices = async (req, res) => {
     }
 };
 
+const addDevice = async (req, res) => {
+    try {
+        const { name, type, ip, status } = req.body;
+        const newDevice = await prisma.device.create({
+            data: {
+                name,
+                type,
+                ipAddress: ip,
+                status
+            }
+        });
+        res.status(201).json(newDevice);
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+
+const updateDevice = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { name, type, ip, status } = req.body;
+        const updatedDevice = await prisma.device.update({
+            where: { id: parseInt(id) },
+            data: {
+                name,
+                type,
+                ipAddress: ip,
+                status
+            }
+        });
+        res.json(updatedDevice);
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+
+const deleteDevice = async (req, res) => {
+    try {
+        const { id } = req.params;
+        await prisma.device.delete({ where: { id: parseInt(id) } });
+        res.json({ message: 'Device deleted successfully' });
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+
 const getGlobalSettings = async (req, res) => {
     try {
         let settings = await prisma.saaSSettings.findFirst();
@@ -582,7 +628,15 @@ const updateBookingSettings = async (req, res) => {
 
 const getStaffMembers = async (req, res) => {
     try {
-        const staff = await prisma.user.findMany({ where: { role: 'STAFF', tenantId: null } });
+        const { tenantId, role } = req.user;
+        const where = {
+            role: { in: ['STAFF', 'TRAINER', 'MANAGER'] }
+        };
+        if (role !== 'SUPER_ADMIN') {
+            where.tenantId = tenantId;
+        }
+
+        const staff = await prisma.user.findMany({ where });
         res.json(staff);
     } catch (error) {
         res.status(500).json({ message: error.message });
@@ -868,5 +922,8 @@ module.exports = {
     updateProfile,
     updateTrainerRequest,
     getMemberWallets,
-    updateStaffMember
+    updateStaffMember,
+    addDevice,
+    updateDevice,
+    deleteDevice
 };

@@ -31,18 +31,21 @@ model Tenant {
   createdAt  DateTime @default(now())
   updatedAt  DateTime @updatedAt
 
-  users     User[]
-  plans     MembershipPlan[]
-  members   Member[]
-  leads     Lead[]
-  classes   Class[]
-  inventory Inventory[]
-  lockers   Locker[]
-  equipment Equipment[]
-  invoices  Invoice[]
-  expenses  Expense[]
-  payroll   Payroll[]
-  settings  TenantSettings?
+  users        User[]
+  plans        MembershipPlan[]
+  members      Member[]
+  leads        Lead[]
+  classes      Class[]
+  inventory    Inventory[]
+  lockers      Locker[]
+  equipment    Equipment[]
+  invoices     Invoice[]
+  expenses     Expense[]
+  payroll      Payroll[]
+  settings     TenantSettings?
+  Announcement Announcement[]
+  Reward       Reward[]
+  Feedback     Feedback[]
 
   @@map("tenant")
 }
@@ -59,14 +62,14 @@ model User {
   avatar   String?
   tenantId Int? // Null for Superadmin
   tenant   Tenant? @relation(fields: [tenantId], references: [id])
-  
+
   // Staff Specific Fields
   department    String?
   baseSalary    Decimal? @db.Decimal(10, 2)
   accountNumber String?
   ifsc          String?
-  config        Json?    // To store trainerConfig, salesConfig, managerConfig
-  documents     Json?    // To store document URLs (govtId, contract)
+  config        Json? // To store trainerConfig, salesConfig, managerConfig
+  documents     Json? // To store document URLs (govtId, contract)
 
   joinedDate DateTime  @default(now())
   lastLogin  DateTime?
@@ -182,13 +185,15 @@ model SaasPayment {
 }
 
 model Device {
-  id       Int      @id @default(autoincrement())
-  name     String
-  type     String
-  status   String   @default("connected") // connected, error, disconnected
-  message  String?
-  tenantId Int? // Can be global or tenant-specific
-  lastSeen DateTime @default(now())
+  id           Int      @id @default(autoincrement())
+  name         String
+  type         String
+  ipAddress    String? // Optional IP address
+  status       String   @default("connected") // connected, error, disconnected
+  entriesToday Int      @default(0) // Tracks entries
+  message      String?
+  tenantId     Int? // Can be global or tenant-specific
+  lastSeen     DateTime @default(now())
 
   @@map("device")
 }
@@ -227,6 +232,8 @@ model Member {
   bookings Booking[]
   wallet   Wallet?
   progress MemberProgress[]
+  Reward   Reward[]
+  Feedback Feedback[]
 
   @@map("member")
 }
@@ -330,25 +337,25 @@ model Booking {
 }
 
 model Inventory {
-  id           Int    @id @default(autoincrement())
-  tenantId     Int
-  tenant       Tenant @relation(fields: [tenantId], references: [id])
+  id           Int     @id @default(autoincrement())
+  tenantId     Int?
+  tenant       Tenant? @relation(fields: [tenantId], references: [id])
   itemName     String
   category     String
   quantity     Int
   unit         String
-  minThreshold Int    @default(5)
-  status       String @default("In Stock")
+  minThreshold Int     @default(5)
+  status       String  @default("In Stock")
 
   @@map("inventory")
 }
 
 model Locker {
-  id           Int    @id @default(autoincrement())
-  tenantId     Int
-  tenant       Tenant @relation(fields: [tenantId], references: [id])
+  id           Int     @id @default(autoincrement())
+  tenantId     Int?
+  tenant       Tenant? @relation(fields: [tenantId], references: [id])
   number       String
-  status       String @default("Available") // Available, Occupied, Under Maintenance
+  status       String  @default("Available") // Available, Occupied, Under Maintenance
   assignedToId Int?
 
   @@map("locker")
@@ -356,8 +363,8 @@ model Locker {
 
 model Equipment {
   id             Int                  @id @default(autoincrement())
-  tenantId       Int
-  tenant         Tenant               @relation(fields: [tenantId], references: [id])
+  tenantId       Int?
+  tenant         Tenant?              @relation(fields: [tenantId], references: [id])
   name           String
   brand          String?
   model          String?
@@ -489,12 +496,16 @@ model MemberProgress {
 }
 
 model Announcement {
-  id        Int      @id @default(autoincrement())
-  title     String
-  content   String   @db.Text
-  authorId  Int
-  author    User     @relation(fields: [authorId], references: [id])
-  createdAt DateTime @default(now())
+  id         Int      @id @default(autoincrement())
+  tenantId   Int?
+  tenant     Tenant?  @relation(fields: [tenantId], references: [id])
+  title      String
+  content    String   @db.Text
+  priority   String   @default("medium") // high, medium, low
+  targetRole String   @default("all") // all, member, trainer, staff
+  authorId   Int
+  author     User     @relation(fields: [authorId], references: [id])
+  createdAt  DateTime @default(now())
 
   @@map("announcement")
 }
@@ -509,4 +520,32 @@ model TenantSettings {
   whatsappEnabled Boolean @default(false)
 
   @@map("tenantsettings")
+}
+
+model Reward {
+  id          Int      @id @default(autoincrement())
+  tenantId    Int?
+  tenant      Tenant?  @relation(fields: [tenantId], references: [id])
+  memberId    Int?
+  member      Member?  @relation(fields: [memberId], references: [id])
+  name        String
+  points      Int      @default(0)
+  description String
+  date        DateTime @default(now())
+
+  @@map("reward")
+}
+
+model Feedback {
+  id       Int      @id @default(autoincrement())
+  tenantId Int?
+  tenant   Tenant?  @relation(fields: [tenantId], references: [id])
+  memberId Int?
+  member   Member?  @relation(fields: [memberId], references: [id])
+  rating   Int
+  comment  String   @db.Text
+  status   String   @default("Pending") // Pending, Addressed
+  date     DateTime @default(now())
+
+  @@map("feedback")
 }

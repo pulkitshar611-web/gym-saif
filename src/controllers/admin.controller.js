@@ -38,6 +38,7 @@ const getAllMembers = async (req, res) => {
             name: m.name || 'N/A',
             phone: m.phone || 'N/A',
             plan: m.plan?.name || 'No Plan',
+            planId: m.planId,
             status: m.status,
             joinDate: m.joinDate,
             expiryDate: m.expiryDate,
@@ -330,6 +331,28 @@ const createBooking = async (req, res) => {
         const { tenantId } = req.user;
         const { memberId, classId, date, status } = req.body;
 
+        if (!memberId || !classId || !date) {
+            return res.status(400).json({ message: 'Member, Class, and Date are required' });
+        }
+
+        // Verify member belongs to tenant
+        const member = await prisma.member.findUnique({
+            where: { id: parseInt(memberId) }
+        });
+
+        if (!member || member.tenantId !== tenantId) {
+            return res.status(403).json({ message: 'Invalid member or access denied' });
+        }
+
+        // Verify class belongs to tenant
+        const gymClass = await prisma.class.findUnique({
+            where: { id: parseInt(classId) }
+        });
+
+        if (!gymClass || gymClass.tenantId !== tenantId) {
+            return res.status(403).json({ message: 'Invalid class or access denied' });
+        }
+
         const newBooking = await prisma.booking.create({
             data: {
                 memberId: parseInt(memberId),
@@ -340,6 +363,7 @@ const createBooking = async (req, res) => {
         });
         res.status(201).json(newBooking);
     } catch (error) {
+        console.error('Create booking error:', error);
         res.status(500).json({ message: error.message });
     }
 };
@@ -753,6 +777,7 @@ const getAllClasses = async (req, res) => {
 
 const createClass = async (req, res) => {
     try {
+        const { tenantId } = req.user;
         const { name, description, trainerId, schedule, maxCapacity, status, location, duration, requiredBenefit } = req.body;
 
         const newClass = await prisma.class.create({
@@ -777,6 +802,7 @@ const createClass = async (req, res) => {
 
 const updateClass = async (req, res) => {
     try {
+        const { id } = req.params;
         const { name, description, trainerId, schedule, maxCapacity, status, location, duration, requiredBenefit } = req.body;
 
         const updated = await prisma.class.update({
@@ -850,6 +876,207 @@ const deleteClass = async (req, res) => {
     }
 };
 
+// --- COMMUNICATION ---
+
+const getAnnouncements = async (req, res) => {
+    try {
+        const announcements = [
+            { id: 1, title: 'Gym Maintenance this Sunday', message: 'The gym will be closed for maintenance from 10 AM to 4 PM this Sunday. We apologize for the inconvenience.', audience: 'All Members', status: 'Scheduled', date: '2024-02-25 09:00 AM', author: 'Admin' },
+            { id: 2, title: 'New Zumba Classes!', message: 'We are excited to announce new Zumba batches starting next week. Register now at the front desk!', audience: 'Active Members', status: 'Posted', date: '2024-02-20 10:30 AM', author: 'Sarah Manager' },
+            { id: 3, title: 'Staff Meeting Reminder', message: 'Monthly staff meeting is scheduled for tomorrow at 2 PM in the conference room.', audience: 'Staff', status: 'Posted', date: '2024-02-18 05:00 PM', author: 'Admin' }
+        ];
+        res.json(announcements);
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+
+const createAnnouncement = async (req, res) => {
+    try {
+        const newAnnouncement = { ...req.body, id: Date.now(), author: 'Current User' };
+        res.json({ message: 'Announcement created successfully', announcement: newAnnouncement });
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+
+const getChats = async (req, res) => {
+    try {
+        const chats = [
+            { id: 1, name: 'Rahul Sharma', lastMsg: 'I will be there at 6 AM tomorrow.', time: '10:30 AM', unread: 2, status: 'online', avatar: 'R' },
+            { id: 2, name: 'Vikram Singh', lastMsg: 'Can you freeze my membership?', time: '09:15 AM', unread: 0, status: 'away', avatar: 'V' }
+        ];
+        res.json(chats);
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+
+const getMessages = async (req, res) => {
+    try {
+        const messages = [
+            { id: 1, text: 'Hi, just a reminder about your session tomorrow.', time: '09:00 AM', sender: 'me', status: 'read' },
+            { id: 2, text: 'I will be there at 6 AM tomorrow. Is that okay?', time: '10:30 AM', sender: 'them', status: 'received' },
+            { id: 3, text: 'Perfect. See you at the gym!', time: '10:35 AM', sender: 'me', status: 'sent' }
+        ];
+        res.json(messages);
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+
+const sendMessage = async (req, res) => {
+    try {
+        res.json({ success: true, message: 'Message sent' });
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+
+const createPayroll = async (req, res) => {
+    try {
+        const { tenantId } = req.user;
+        const { staffId, amount, month, year, status } = req.body;
+
+        const monthMap = {
+            'January': 1, 'February': 2, 'March': 3, 'April': 4, 'May': 5, 'June': 6,
+            'July': 7, 'August': 8, 'September': 9, 'October': 10, 'November': 11, 'December': 12
+        };
+
+        const monthInt = typeof month === 'string' ? monthMap[month] : month;
+
+        const payroll = await prisma.payroll.create({
+            data: {
+                tenantId,
+                staffId: parseInt(staffId),
+                amount: parseFloat(amount),
+                month: monthInt,
+                year: parseInt(year),
+                status
+            }
+        });
+
+        res.status(201).json(payroll);
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+
+const getPayrollHistory = async (req, res) => {
+    try {
+        const { tenantId } = req.user;
+        const history = await prisma.payroll.findMany({
+            where: { tenantId },
+            include: {
+                tenant: { select: { name: true, branchName: true } }
+            },
+            orderBy: { id: 'desc' }
+        });
+
+        // Fetch staff names separately as they are in the User model but not directly linked in current prisma schema relation for Payroll?
+        // Actually wait, let's check schema for Payroll relations.
+        // model Payroll {
+        //   id       Int     @id @default(autoincrement())
+        //   tenantId Int
+        //   tenant   Tenant  @relation(fields: [tenantId], references: [id])
+        //   staffId  Int
+        //   amount   Decimal @db.Decimal(10, 2)
+        //   month    Int
+        //   year     Int
+        //   status   String  @default("Pending") // Pending, Processed
+        // }
+        // No staff relation. I should fetch users.
+
+        const staffIds = history.map(h => h.staffId);
+        const staff = await prisma.user.findMany({
+            where: { id: { in: staffIds } },
+            select: { id: true, name: true }
+        });
+
+        const staffMap = staff.reduce((acc, s) => {
+            acc[s.id] = s.name;
+            return acc;
+        }, {});
+
+        const formattedHistory = history.map(h => ({
+            ...h,
+            staffName: staffMap[h.staffId] || 'Unknown Staff'
+        }));
+
+        res.json(formattedHistory);
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+
+const updatePayrollStatus = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { status } = req.body;
+        const { tenantId } = req.user;
+
+        const payroll = await prisma.payroll.updateMany({
+            where: { id: parseInt(id), tenantId },
+            data: { status }
+        });
+
+        if (payroll.count === 0) {
+            return res.status(404).json({ message: 'Payroll record not found' });
+        }
+
+        res.json({ success: true, message: 'Status updated' });
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+
+const getProfile = async (req, res) => {
+    console.log(`Profile fetch request for user: ${req.user.id}, role: ${req.user.role}`);
+    try {
+        const user = await prisma.user.findUnique({
+            where: { id: req.user.id },
+            select: {
+                id: true,
+                name: true,
+                email: true,
+                phone: true,
+                address: true,
+                role: true,
+                status: true,
+                avatar: true,
+                joinedDate: true
+            }
+        });
+
+        // Format joinedDate to 'short' format like 'Feb 2024'
+        const formattedUser = {
+            ...user,
+            avatar: user.avatar || user.name.charAt(0),
+            joinedDate: new Date(user.joinedDate).toLocaleDateString('en-US', {
+                month: 'short',
+                year: 'numeric'
+            })
+        };
+
+        res.json(formattedUser);
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+
+const updateProfile = async (req, res) => {
+    try {
+        const { name, email, phone, address } = req.body;
+        const updated = await prisma.user.update({
+            where: { id: req.user.id },
+            data: { name, email, phone, address }
+        });
+        res.json(updated);
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+
 module.exports = {
     getAllMembers,
     addMember,
@@ -893,5 +1120,15 @@ module.exports = {
     getClassById,
     createClass,
     updateClass,
-    deleteClass
+    deleteClass,
+    getAnnouncements,
+    createAnnouncement,
+    getChats,
+    getMessages,
+    sendMessage,
+    createPayroll,
+    getPayrollHistory,
+    updatePayrollStatus,
+    getProfile,
+    updateProfile
 };

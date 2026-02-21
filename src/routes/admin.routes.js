@@ -43,7 +43,17 @@ const {
     getClassById,
     createClass,
     updateClass,
-    deleteClass
+    deleteClass,
+    getAnnouncements,
+    createAnnouncement,
+    getChats,
+    getMessages,
+    sendMessage,
+    createPayroll,
+    getPayrollHistory,
+    updatePayrollStatus,
+    getProfile,
+    updateProfile
 } = require('../controllers/admin.controller');
 const { protect, authorize } = require('../middleware/auth.middleware');
 
@@ -108,5 +118,22 @@ router.get('/classes/:id', getClassById);
 router.post('/classes', createClass);
 router.patch('/classes/:id', updateClass);
 router.delete('/classes/:id', deleteClass);
+
+// Communication
+router.get('/communication/announcements', getAnnouncements);
+router.post('/communication/announcements', createAnnouncement);
+router.get('/communication/chats', getChats);
+router.get('/communication/chats/:id/messages', getMessages);
+router.post('/communication/chats/:id/send', sendMessage);
+
+// Payroll
+router.get('/payroll/staff', getAllStaff);
+router.post('/payroll', createPayroll);
+router.get('/payroll/history', getPayrollHistory);
+router.patch('/payroll/:id/status', updatePayrollStatus);
+
+// Profile
+router.get('/profile', getProfile);
+router.patch('/profile', updateProfile);
 
 module.exports = router;

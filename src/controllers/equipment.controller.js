@@ -4,10 +4,13 @@ const prisma = new PrismaClient();
 // Get all equipment for a tenant
 const getAllEquipment = async (req, res) => {
     try {
-        const { tenantId } = req.user;
+        const { tenantId, role } = req.user;
         const { search, category } = req.query;
 
-        const where = { tenantId };
+        const where = {};
+        if (role !== 'SUPER_ADMIN') {
+            where.tenantId = tenantId;
+        }
 
         if (category && category !== 'All') {
             where.category = category;
@@ -37,12 +40,12 @@ const getAllEquipment = async (req, res) => {
 // Add new equipment
 const addEquipment = async (req, res) => {
     try {
-        const { tenantId } = req.user;
+        const { tenantId, role } = req.user;
         const { name, brand, model, serialNumber, category, location, purchaseDate, warrantyExpiry, status } = req.body;
 
         const equipment = await prisma.equipment.create({
             data: {
-                tenantId,
+                tenantId: role === 'SUPER_ADMIN' ? null : tenantId,
                 name,
                 brand,
                 model,
@@ -65,7 +68,7 @@ const addEquipment = async (req, res) => {
 const updateEquipment = async (req, res) => {
     try {
         const { id } = req.params;
-        const { tenantId } = req.user;
+        const { tenantId, role } = req.user;
         const updateData = req.body;
 
         if (updateData.warrantyExpiry) {
@@ -76,8 +79,13 @@ const updateEquipment = async (req, res) => {
             updateData.purchaseDate = new Date(updateData.purchaseDate);
         }
 
+        const where = { id: parseInt(id) };
+        if (role !== 'SUPER_ADMIN') {
+            where.tenantId = tenantId;
+        }
+
         const equipment = await prisma.equipment.updateMany({
-            where: { id: parseInt(id), tenantId },
+            where: where,
             data: updateData
         });
 
@@ -91,10 +99,15 @@ const updateEquipment = async (req, res) => {
 const deleteEquipment = async (req, res) => {
     try {
         const { id } = req.params;
-        const { tenantId } = req.user;
+        const { tenantId, role } = req.user;
+
+        const where = { id: parseInt(id) };
+        if (role !== 'SUPER_ADMIN') {
+            where.tenantId = tenantId;
+        }
 
         await prisma.equipment.deleteMany({
-            where: { id: parseInt(id), tenantId }
+            where: where
         });
 
         res.json({ message: 'Equipment deleted successfully' });
@@ -107,11 +120,16 @@ const deleteEquipment = async (req, res) => {
 const reportIssue = async (req, res) => {
     try {
         const { equipmentId, issue, priority } = req.body;
-        const { tenantId } = req.user;
+        const { tenantId, role } = req.user;
 
         // Verify equipment belongs to tenant
+        const where = { id: parseInt(equipmentId) };
+        if (role !== 'SUPER_ADMIN') {
+            where.tenantId = tenantId;
+        }
+
         const equipment = await prisma.equipment.findFirst({
-            where: { id: parseInt(equipmentId), tenantId }
+            where: where
         });
 
         if (!equipment) {
@@ -144,14 +162,15 @@ const reportIssue = async (req, res) => {
 // Get all maintenance requests
 const getMaintenanceRequests = async (req, res) => {
     try {
-        const { tenantId } = req.user;
+        const { tenantId, role } = req.user;
         const { status, priority } = req.query;
 
-        const where = {
-            equipment: {
+        const where = {};
+        if (role !== 'SUPER_ADMIN') {
+            where.equipment = {
                 tenantId
-            }
-        };
+            };
+        }
 
         if (status && status !== 'All') {
             where.status = status;
@@ -180,16 +199,16 @@ const updateMaintenanceStatus = async (req, res) => {
     try {
         const { id } = req.params;
         const { status } = req.body;
-        const { tenantId } = req.user;
+        const { tenantId, role } = req.user;
 
         // Verify ownership through equipment
+        const where = { id: parseInt(id) };
+        if (role !== 'SUPER_ADMIN') {
+            where.equipment = { tenantId };
+        }
+
         const request = await prisma.maintenanceRequest.findFirst({
-            where: {
-                id: parseInt(id),
-                equipment: {
-                    tenantId
-                }
-            }
+            where: where
         });
 
         if (!request) {

@@ -46,7 +46,10 @@ const {
     updateProfile,
     updateTrainerRequest,
     getMemberWallets,
-    updateStaffMember
+    updateStaffMember,
+    addDevice,
+    updateDevice,
+    deleteDevice
 } = require('../controllers/superadmin.controller');
 const { protect, authorize } = require('../middleware/auth.middleware');
 
@@ -92,6 +95,9 @@ router.get('/reports/gst', getGSTReports);
 
 // Devices & Settings
 router.get('/devices', getDevices);
+router.post('/devices', addDevice);
+router.patch('/devices/:id', updateDevice);
+router.delete('/devices/:id', deleteDevice);
 router.get('/settings/global', getGlobalSettings);
 router.patch('/settings/global', updateGlobalSettings);
 router.get('/settings/invoice', getInvoiceSettings);
