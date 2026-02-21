@@ -203,6 +203,58 @@ const getAllStaff = async (req, res) => {
     }
 };
 
+const createStaff = async (req, res) => {
+    try {
+        const { tenantId } = req.user;
+        const {
+            name, email, phone, dob, department, role,
+            joiningDate, status, baseSalary, accountNumber, ifsc,
+            trainerConfig, salesConfig, managerConfig, documents
+        } = req.body;
+
+        // Combine role configs into one config object based on the role
+        let config = null;
+        if (role === 'Trainer') config = trainerConfig;
+        if (role === 'Sales') config = salesConfig;
+        if (role === 'Manager') config = managerConfig;
+
+        // Hash default password for staff (e.g. 123456)
+        const bcrypt = require('bcryptjs');
+        const hashedPassword = await bcrypt.hash('123456', 10);
+
+        // Handle exact role value
+        let mappedRole = role.toUpperCase();
+        if (role === 'Admin') mappedRole = 'BRANCH_ADMIN';
+        if (role === 'Sales') mappedRole = 'STAFF';
+        if (role === 'Sales Professional') mappedRole = 'STAFF';
+        if (role === 'Receptionist') mappedRole = 'STAFF';
+
+        const newStaff = await prisma.user.create({
+            data: {
+                name,
+                email,
+                password: hashedPassword,
+                phone,
+                role: mappedRole,
+                tenantId,
+                status: status || 'Active',
+                department,
+                joinedDate: joiningDate ? new Date(joiningDate) : new Date(),
+                baseSalary: baseSalary ? parseFloat(baseSalary) : null,
+                accountNumber,
+                ifsc,
+                config: config || {},
+                documents: documents || {}
+            }
+        });
+
+        res.status(201).json(newStaff);
+    } catch (error) {
+        console.error('Error creating staff:', error);
+        res.status(500).json({ message: error.message });
+    }
+};
+
 // --- BOOKINGS ---
 
 const getBookings = async (req, res) => {
@@ -813,6 +865,7 @@ module.exports = {
     updatePlan,
     deletePlan,
     getAllStaff,
+    createStaff,
     fetchBranchDashboardCards,
     getBookings,
     getBookingStats,

@@ -11,6 +11,7 @@ const {
     unfreezeMember,
     giftDays,
     getAllStaff,
+    createStaff,
     fetchBranchDashboardCards,
     getBookings,
     getBookingStats,
@@ -93,6 +94,7 @@ router.get('/reports/bookings', getBookingReport);
 router.get('/reports/attendance', getAttendanceReport);
 router.get('/dashboard-cards', fetchBranchDashboardCards);
 router.get('/staff', getAllStaff);
+router.post('/staff', createStaff);
 
 // Membership Plans
 router.get('/plans', getAllPlans);

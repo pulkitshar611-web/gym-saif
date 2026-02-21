@@ -30,10 +30,12 @@ app.use('/api/v1/admin', adminRoutes);
 const branchAdminRoutes = require('./routes/branchAdmin.routes');
 const crmRoutes = require('./routes/crm.routes');
 const equipmentRoutes = require('./routes/equipment.routes');
+const financeRoutes = require('./routes/finance.routes');
 
 app.use('/api/v1/branch-admin', branchAdminRoutes);
 app.use('/api/v1/crm', crmRoutes);
 app.use('/api/v1/equipment', equipmentRoutes);
+app.use('/api/v1/finance', financeRoutes);
 
 // Base Route
 app.get('/', (req, res) => {

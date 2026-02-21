@@ -591,12 +591,35 @@ const getStaffMembers = async (req, res) => {
 
 const addStaffMember = async (req, res) => {
     try {
-        const { role = 'STAFF', ...userData } = req.body;
+        const { role = 'STAFF', branch, ...restUserData } = req.body;
+        let tenantId = req.user.tenantId;
+
+        if (req.user.role === 'SUPER_ADMIN' && branch) {
+            const tenantObj = await prisma.tenant.findFirst({ where: { branchName: branch } });
+            if (tenantObj) {
+                tenantId = tenantObj.id;
+            } else {
+                const altTenant = await prisma.tenant.findFirst({ where: { name: branch } });
+                if (altTenant) tenantId = altTenant.id;
+            }
+        }
+
+        const bcrypt = require('bcryptjs');
+        const hashedPassword = await bcrypt.hash(restUserData.password || '123456', 10);
+
+        const { password, ...safeUserData } = restUserData;
+
         const newStaff = await prisma.user.create({
-            data: { ...userData, role }
+            data: {
+                ...safeUserData,
+                password: hashedPassword,
+                role,
+                tenantId: tenantId || null
+            }
         });
         res.status(201).json(newStaff);
     } catch (error) {
+        console.error('Error adding staff member:', error);
         res.status(500).json({ message: error.message });
     }
 };
@@ -682,11 +705,17 @@ const getMemberWallets = async (req, res) => {
 
 const getTrainerRequests = async (req, res) => {
     try {
+        const { role, tenantId } = req.user;
+        const whereClause = {
+            role: 'TRAINER',
+        };
+
+        if (role !== 'SUPER_ADMIN') {
+            whereClause.tenantId = tenantId;
+        }
+
         const trainers = await prisma.user.findMany({
-            where: {
-                role: 'TRAINER',
-                status: 'Pending'
-            },
+            where: whereClause,
             include: {
                 tenant: {
                     select: {
@@ -716,6 +745,14 @@ const updateTrainerRequest = async (req, res) => {
     try {
         const { id } = req.params;
         const { status } = req.body;
+        const { role, tenantId } = req.user;
+
+        const targetUser = await prisma.user.findUnique({ where: { id: parseInt(id) } });
+        if (!targetUser) return res.status(404).json({ message: 'Trainer request not found' });
+
+        if (role !== 'SUPER_ADMIN' && targetUser.tenantId !== tenantId) {
+            return res.status(403).json({ message: 'Unauthorized to update this request' });
+        }
 
         const updated = await prisma.user.update({
             where: { id: parseInt(id) },
