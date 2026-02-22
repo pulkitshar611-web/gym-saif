@@ -56,7 +56,7 @@ const { protect, authorize } = require('../middleware/auth.middleware');
 const router = express.Router();
 
 router.use(protect);
-router.use(authorize('SUPER_ADMIN', 'BRANCH_ADMIN'));
+router.use(authorize('SUPER_ADMIN'));
 
 router.get('/profile', getProfile);
 router.patch('/profile', updateProfile);

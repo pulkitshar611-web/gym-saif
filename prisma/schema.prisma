@@ -31,21 +31,26 @@ model Tenant {
   createdAt  DateTime @default(now())
   updatedAt  DateTime @updatedAt
 
-  users        User[]
-  plans        MembershipPlan[]
-  members      Member[]
-  leads        Lead[]
-  classes      Class[]
-  inventory    Inventory[]
-  lockers      Locker[]
-  equipment    Equipment[]
-  invoices     Invoice[]
-  expenses     Expense[]
-  payroll      Payroll[]
-  settings     TenantSettings?
-  Announcement Announcement[]
-  Reward       Reward[]
-  Feedback     Feedback[]
+  users               User[]
+  plans               MembershipPlan[]
+  members             Member[]
+  leads               Lead[]
+  classes             Class[]
+  inventory           Inventory[]
+  lockers             Locker[]
+  equipment           Equipment[]
+  invoices            Invoice[]
+  expenses            Expense[]
+  payroll             Payroll[]
+  settings            TenantSettings?
+  Announcement        Announcement[]
+  Reward              Reward[]
+  Feedback            Feedback[]
+  Attendance          Attendance[]
+  LeaveRequest        LeaveRequest[]
+  TrainerAvailability TrainerAvailability[]
+  dietPlans           DietPlan[]
+  workoutPlans        WorkoutPlan[]
 
   @@map("tenant")
 }
@@ -76,12 +81,16 @@ model User {
 
   // Relations
   authoredAnnouncements Announcement[]
-  assignedTasks         Task[]         @relation("AssignedTasks")
-  createdTasks          Task[]         @relation("CreatedTasks")
-  assignedMember        Member[]       @relation("TrainerToMember")
-  assignedLeads         Lead[]         @relation("LeadAssignee")
+  assignedTasks         Task[]               @relation("AssignedTasks")
+  createdTasks          Task[]               @relation("CreatedTasks")
+  assignedMember        Member[]             @relation("TrainerToMember")
+  assignedLeads         Lead[]               @relation("LeadAssignee")
   attendances           Attendance[]
   classes               Class[]
+  LeaveRequest          LeaveRequest[]
+  trainerAvailability   TrainerAvailability?
+  trainerDietPlans      DietPlan[]           @relation("TrainerDietPlan")
+  trainerWorkoutPlans   WorkoutPlan[]        @relation("TrainerWorkoutPlan")
 
   @@map("user")
 }
@@ -226,6 +235,8 @@ model Member {
   // Onboarding & Medical
   medicalHistory String? @db.Text
   fitnessGoal    String?
+  targetWeight   Decimal? @db.Decimal(5, 2)
+  targetBodyFat  Decimal? @db.Decimal(5, 2)
   emergencyName  String?
   emergencyPhone String?
 
@@ -234,6 +245,8 @@ model Member {
   progress MemberProgress[]
   Reward   Reward[]
   Feedback Feedback[]
+  dietPlans DietPlan[]
+  workoutPlans WorkoutPlan[]
 
   @@map("member")
 }
@@ -438,13 +451,48 @@ model Payroll {
 
 model Attendance {
   id       Int       @id @default(autoincrement())
+  tenantId Int       @default(1)
+  tenant   Tenant    @relation(fields: [tenantId], references: [id])
   userId   Int
   user     User      @relation(fields: [userId], references: [id])
-  checkIn  DateTime  @default(now())
+  date     DateTime  @default(now()) @db.Date
+  checkIn  DateTime?
   checkOut DateTime?
+  status   String    @default("Present") // Present, Late, Absent, On Leave
   type     String // Member, Staff, Trainer
 
   @@map("attendance")
+}
+
+model LeaveRequest {
+  id        Int      @id @default(autoincrement())
+  tenantId  Int      @default(1)
+  tenant    Tenant   @relation(fields: [tenantId], references: [id])
+  userId    Int
+  user      User     @relation(fields: [userId], references: [id])
+  type      String   @default("Vacation") // Vacation, Sick, Personal
+  startDate DateTime
+  endDate   DateTime
+  reason    String   @db.Text
+  status    String   @default("Pending") // Pending, Approved, Rejected
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("leave_request")
+}
+
+model TrainerAvailability {
+  id             Int      @id @default(autoincrement())
+  tenantId       Int      @default(1)
+  tenant         Tenant   @relation(fields: [tenantId], references: [id])
+  trainerId      Int      @unique
+  trainer        User     @relation(fields: [trainerId], references: [id])
+  weeklySchedule Json // Stores the array of availability objects
+  preferences    Json // Stores preferences (e.g. instantBooking)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@map("trainer_availability")
 }
 
 model Task {
@@ -484,13 +532,15 @@ model Transaction {
 }
 
 model MemberProgress {
-  id       Int      @id @default(autoincrement())
-  memberId Int
-  member   Member   @relation(fields: [memberId], references: [id])
-  weight   Decimal? @db.Decimal(5, 2)
-  bodyFat  Decimal? @db.Decimal(5, 2)
-  notes    String?
-  date     DateTime @default(now())
+  id           Int      @id @default(autoincrement())
+  memberId     Int
+  member       Member   @relation(fields: [memberId], references: [id])
+  weight       Decimal? @db.Decimal(5, 2)
+  bodyFat      Decimal? @db.Decimal(5, 2)
+  measurements Json?
+  photos       Json?
+  notes        String?
+  date         DateTime @default(now())
 
   @@map("memberprogress")
 }
@@ -528,9 +578,9 @@ model Reward {
   tenant      Tenant?  @relation(fields: [tenantId], references: [id])
   memberId    Int?
   member      Member?  @relation(fields: [memberId], references: [id])
-  name        String
+  name        String   @default("Reward")
   points      Int      @default(0)
-  description String
+  description String   @default("")
   date        DateTime @default(now())
 
   @@map("reward")
@@ -548,4 +598,53 @@ model Feedback {
   date     DateTime @default(now())
 
   @@map("feedback")
+}
+
+model DietPlan {
+  id        String   @id @default(uuid())
+  tenantId  Int      @default(1)
+  tenant    Tenant   @relation(fields: [tenantId], references: [id])
+  trainerId Int
+  trainer   User     @relation("TrainerDietPlan", fields: [trainerId], references: [id])
+  clientId  Int
+  client    Member   @relation(fields: [clientId], references: [id])
+  
+  name      String
+  target    String
+  duration  String
+  calories  Int
+  macros    Json     // { protein, carbs, fats }
+  meals     Json     // array of meal objects
+  notes     String?  @db.Text
+  status    String   @default("Active")
+  
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("diet_plan")
+}
+
+model WorkoutPlan {
+  id             String   @id @default(uuid())
+  tenantId       Int      @default(1)
+  tenant         Tenant   @relation(fields: [tenantId], references: [id])
+  trainerId      Int
+  trainer        User     @relation("TrainerWorkoutPlan", fields: [trainerId], references: [id])
+  clientId       Int
+  client         Member   @relation(fields: [clientId], references: [id])
+  
+  name           String
+  level          String   @default("Beginner")
+  duration       String
+  goal           String
+  volume         String
+  timePerSession String
+  intensity      String
+  status         String   @default("Active")
+  days           Json     // object containing monday-sunday routines
+  
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@map("workout_plan")
 }

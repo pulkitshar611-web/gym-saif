@@ -53,25 +53,29 @@ const {
     getPayrollHistory,
     updatePayrollStatus,
     getProfile,
-    updateProfile
+    updateProfile,
+    getLeaveRequests,
+    updateLeaveStatus
 } = require('../controllers/admin.controller');
 const { protect, authorize } = require('../middleware/auth.middleware');
 
 const router = express.Router();
 
 router.use(protect);
-router.use(authorize('BRANCH_ADMIN', 'MANAGER'));
+// Default: BRANCH_ADMIN and MANAGER can access everything
+// STAFF gets read-only access to specific routes defined below with inline authorize
+router.use(authorize('BRANCH_ADMIN', 'MANAGER', 'STAFF'));
 
-// Members
+// Members — STAFF can view only, cannot create/edit/delete
 router.get('/members', getAllMembers);
-router.post('/members', addMember);
+router.post('/members', authorize('BRANCH_ADMIN', 'MANAGER'), addMember);
 router.get('/members/:id', getMemberById);
-router.patch('/members/:id', updateMember);
-router.delete('/members/:id', deleteMember);
-router.patch('/members/:id/toggle-status', toggleMemberStatus);
-router.patch('/members/:id/freeze', freezeMember);
-router.patch('/members/:id/unfreeze', unfreezeMember);
-router.patch('/members/:id/gift', giftDays);
+router.patch('/members/:id', authorize('BRANCH_ADMIN', 'MANAGER'), updateMember);
+router.delete('/members/:id', authorize('BRANCH_ADMIN', 'MANAGER'), deleteMember);
+router.patch('/members/:id/toggle-status', authorize('BRANCH_ADMIN', 'MANAGER'), toggleMemberStatus);
+router.patch('/members/:id/freeze', authorize('BRANCH_ADMIN', 'MANAGER'), freezeMember);
+router.patch('/members/:id/unfreeze', authorize('BRANCH_ADMIN', 'MANAGER'), unfreezeMember);
+router.patch('/members/:id/gift', authorize('BRANCH_ADMIN', 'MANAGER'), giftDays);
 
 // Bookings
 router.get('/bookings', getBookings);
@@ -100,15 +104,19 @@ router.delete('/tasks/:id', deleteTask);
 router.post('/tasks/assign', assignTask);
 
 // Reports & Staff
-router.get('/reports/bookings', getBookingReport);
-router.get('/reports/attendance', getAttendanceReport);
+router.get('/reports/bookings', authorize('BRANCH_ADMIN', 'MANAGER'), getBookingReport);
+router.get('/reports/attendance', authorize('BRANCH_ADMIN', 'MANAGER'), getAttendanceReport);
 router.get('/dashboard-cards', fetchBranchDashboardCards);
 router.get('/staff', getAllStaff);
-router.post('/staff', createStaff);
+router.post('/staff', authorize('BRANCH_ADMIN', 'MANAGER'), createStaff);
+
+// Leave Requests (Staff/HR)
+router.get('/leave-requests', authorize('BRANCH_ADMIN', 'MANAGER'), getLeaveRequests);
+router.patch('/leave-requests/:id/status', authorize('BRANCH_ADMIN', 'MANAGER'), updateLeaveStatus);
 
 // Membership Plans
 router.get('/plans', getAllPlans);
-router.post('/plans', createPlan);
+router.post('/plans', authorize('BRANCH_ADMIN', 'MANAGER'), createPlan);
 router.patch('/plans/:id', updatePlan);
 router.delete('/plans/:id', deletePlan);
 

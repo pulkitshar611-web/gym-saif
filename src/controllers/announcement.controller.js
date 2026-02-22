@@ -21,7 +21,7 @@ exports.getAllAnnouncements = async (req, res) => {
             message: a.content,
             date: new Date(a.createdAt).toLocaleDateString(),
             priority: a.priority,
-            targetAudience: a.targetRole
+            targetRole: a.targetRole
         }));
 
         res.json(formatted);

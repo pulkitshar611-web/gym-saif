@@ -21,7 +21,12 @@ const {
     addServiceRequest,
     getMemberProfile
 } = require('../controllers/member.controller');
+const {
+    getProgress,
+    logProgress
+} = require('../controllers/progress.controller');
 const { protect, authorize } = require('../middleware/auth.middleware');
+
 
 const router = express.Router();
 
@@ -37,6 +42,10 @@ router.get('/membership-details', getMembershipDetails);
 router.get('/service-requests', getServiceRequests);
 router.post('/service-requests', addServiceRequest);
 router.get('/profile', getMemberProfile);
+
+// Progress
+router.get('/progress', getProgress);
+router.post('/progress', logProgress);
 
 // Wallet & Payments
 router.get('/wallet/transactions', getWalletTransactions);

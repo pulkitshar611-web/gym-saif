@@ -94,18 +94,39 @@ async function main() {
         }
     });
 
-    // Create Dummy Member
+    // Create Member User
+    const memberUser = await prisma.user.upsert({
+        where: { email: 'member@gym.com' },
+        update: { tenantId: testGym.id },
+        create: {
+            email: 'member@gym.com',
+            password: branchHashedPassword, // 123456
+            name: 'Test Member',
+            role: 'MEMBER',
+            status: 'Active',
+            tenantId: testGym.id
+        }
+    });
+
+    // Create Dummy Member Profile
     const member = await prisma.member.upsert({
         where: {
             memberId: 'MEM-001'
         },
-        update: { tenantId: testGym.id },
+        update: {
+            userId: memberUser.id,
+            tenantId: testGym.id
+        },
         create: {
             memberId: 'MEM-001',
             email: 'member@gym.com',
+            userId: memberUser.id,
             name: 'Test Member',
             phone: '9876543210',
             status: 'Active',
+            fitnessGoal: 'Weight Loss & Muscle Gain',
+            targetWeight: 78.0,
+            targetBodyFat: 15.0,
             tenantId: testGym.id,
             joinDate: new Date(),
         }

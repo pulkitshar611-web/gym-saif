@@ -53,9 +53,16 @@ const getMe = async (req, res) => {
             name: user.name,
             email: user.email,
             role: user.role,
-            avatar: user.avatar,
+            phone: user.phone || '',
+            address: user.address || '',
+            avatar: user.avatar || user.name.charAt(0),
+            status: user.status || 'Active',
             tenantId: user.tenantId,
-            branchName: user.tenant?.branchName
+            branchName: user.tenant?.branchName,
+            joinedDate: new Date(user.joinedDate).toLocaleDateString('en-US', {
+                month: 'short',
+                year: 'numeric'
+            })
         });
     } catch (error) {
         res.status(500).json({ message: error.message });

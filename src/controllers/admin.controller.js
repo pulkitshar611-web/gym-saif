@@ -760,7 +760,9 @@ const getAllClasses = async (req, res) => {
             description: cls.description,
             trainerName: cls.trainer?.name || 'Unassigned',
             trainerId: cls.trainerId,
-            schedule: cls.schedule, // Now returning the actual schedule (likely string or JSON)
+            schedule: cls.schedule && cls.schedule.date
+                ? `${cls.schedule.date} at ${cls.schedule.time}`
+                : (typeof cls.schedule === 'string' ? cls.schedule : 'TBA'),
             duration: cls.duration || '60 mins',
             capacity: cls.maxCapacity,
             enrolled: cls.bookings.length,
@@ -1077,6 +1079,61 @@ const updateProfile = async (req, res) => {
     }
 };
 
+// --- LEAVE MANAGEMENT ---
+const getLeaveRequests = async (req, res) => {
+    try {
+        const { tenantId } = req.user;
+        const requests = await prisma.leaveRequest.findMany({
+            where: { tenantId },
+            include: { user: { select: { id: true, name: true, role: true } } },
+            orderBy: { createdAt: 'desc' }
+        });
+        res.json(requests);
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+
+const updateLeaveStatus = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { status } = req.body;
+        const leave = await prisma.leaveRequest.update({
+            where: { id: parseInt(id) },
+            data: { status }
+        });
+
+        // Optionally, if approved, create attendance records marking as "On Leave" for those dates
+        if (status === 'Approved') {
+            const start = new Date(leave.startDate);
+            const end = new Date(leave.endDate);
+            const dates = [];
+            for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
+                dates.push(new Date(d));
+            }
+
+            for (const date of dates) {
+                date.setHours(0, 0, 0, 0);
+                await prisma.attendance.upsert({
+                    where: { id: -1 }, // Force create, or better logic to find unique if needed via another query
+                    update: {},
+                    create: {
+                        userId: leave.userId,
+                        tenantId: leave.tenantId,
+                        date: date,
+                        status: 'On Leave',
+                        type: 'Trainer' // Defaulting safely, could read from user.role
+                    }
+                });
+            }
+        }
+
+        res.json({ success: true, message: 'Leave status updated', data: leave });
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+
 module.exports = {
     getAllMembers,
     addMember,
@@ -1130,5 +1187,7 @@ module.exports = {
     getPayrollHistory,
     updatePayrollStatus,
     getProfile,
-    updateProfile
+    updateProfile,
+    getLeaveRequests,
+    updateLeaveStatus
 };
