@@ -48,6 +48,65 @@ const logout = (req, res) => {
 const getMe = async (req, res) => {
     try {
         const user = req.user;
+        let memberData = {};
+
+        if (user.role === 'MEMBER') {
+            const member = await prisma.member.findUnique({
+                where: { userId: user.id },
+                include: {
+                    plan: true,
+                    bookings: {
+                        where: { status: { in: ['Upcoming', 'Completed'] } },
+                        include: { class: true }
+                    }
+                }
+            });
+
+            if (member) {
+                const benefits = member.plan?.benefits || [];
+                // Initialize with full limits from plan
+                const benefitWallet = {
+                    classCredits: 10,
+                    saunaSessions: 0,
+                    iceBathCredits: 0
+                };
+
+                if (Array.isArray(benefits)) {
+                    benefits.forEach(b => {
+                        const name = (b.name || '').toLowerCase();
+                        if (name.includes('sauna')) benefitWallet.saunaSessions = b.limit || 0;
+                        if (name.includes('ice bath')) benefitWallet.iceBathCredits = b.limit || 0;
+                        if (name.includes('pt') || name.includes('class')) benefitWallet.classCredits = b.limit || 10;
+                    });
+                }
+
+                // Subtract used credits based on bookings
+                member.bookings.forEach(b => {
+                    const className = (b.class?.name || '').toLowerCase();
+                    if (className.includes('sauna')) {
+                        benefitWallet.saunaSessions = Math.max(0, benefitWallet.saunaSessions - 1);
+                    } else if (className.includes('ice bath')) {
+                        benefitWallet.iceBathCredits = Math.max(0, benefitWallet.iceBathCredits - 1);
+                    } else {
+                        benefitWallet.classCredits = Math.max(0, benefitWallet.classCredits - 1);
+                    }
+                });
+
+                benefitWallet.ptSessions = benefitWallet.classCredits;
+
+                memberData = {
+                    memberId: member.memberId,
+                    status: member.status,
+                    plan: member.plan?.name || 'No Active Plan',
+                    planValidity: member.plan ? `${member.plan.duration} ${member.plan.durationType}` : 'N/A',
+                    membershipStartDate: member.joinDate,
+                    membershipExpiryDate: member.expiryDate || member.joinDate,
+                    membershipStatus: member.status,
+                    benefitWallet
+                };
+            }
+        }
+
         res.json({
             id: user.id,
             name: user.name,
@@ -62,7 +121,8 @@ const getMe = async (req, res) => {
             joinedDate: new Date(user.joinedDate).toLocaleDateString('en-US', {
                 month: 'short',
                 year: 'numeric'
-            })
+            }),
+            ...memberData
         });
     } catch (error) {
         res.status(500).json({ message: error.message });
@@ -71,10 +131,28 @@ const getMe = async (req, res) => {
 
 const updateProfile = async (req, res) => {
     try {
+        const { password, ...updateData } = req.body;
+
+        let finalData = { ...updateData };
+        if (password) {
+            finalData.password = await bcrypt.hash(password, 10);
+        }
+
         const user = await prisma.user.update({
             where: { id: req.user.id },
-            data: req.body
+            data: finalData
         });
+
+        if (user.role === 'MEMBER') {
+            await prisma.member.updateMany({
+                where: { userId: user.id },
+                data: {
+                    name: finalData.name,
+                    phone: finalData.phone
+                }
+            });
+        }
+
         res.json({
             id: user.id,
             name: user.name,

@@ -19,7 +19,7 @@ exports.getAllFeedback = async (req, res) => {
 
         const formatted = feedbacks.map(f => ({
             id: f.id,
-            member: f.member ? `${f.member.firstName} ${f.member.lastName}` : 'Anonymous',
+            member: f.member ? f.member.name : 'Anonymous',
             rating: f.rating,
             comment: f.comment,
             status: f.status,
@@ -34,13 +34,26 @@ exports.getAllFeedback = async (req, res) => {
 
 exports.addFeedback = async (req, res) => {
     try {
-        const { tenantId, role } = req.user;
-        const { memberId, rating, comment } = req.body;
+        let tenantId = req.user.tenantId;
+        const role = req.user.role;
+        const { rating, comment } = req.body;
+        let finalMemberId = null;
+
+        if (role === 'MEMBER') {
+            const memberRaw = await prisma.$queryRaw`SELECT * FROM member WHERE userId = ${req.user.id}`;
+            const member = memberRaw[0];
+            if (!member) return res.status(404).json({ message: 'Member profile not found' });
+
+            finalMemberId = member.id;
+            tenantId = member.tenantId;
+        } else {
+            finalMemberId = parseInt(req.body.memberId) || 1;
+        }
 
         const newFeedback = await prisma.feedback.create({
             data: {
                 tenantId: role === 'SUPER_ADMIN' ? null : tenantId,
-                memberId: parseInt(memberId) || 1, // mock fallback
+                memberId: finalMemberId,
                 rating: parseInt(rating) || 5,
                 comment,
                 status: 'Pending'

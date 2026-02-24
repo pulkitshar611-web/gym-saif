@@ -209,7 +209,7 @@ const createStaff = async (req, res) => {
         const { tenantId } = req.user;
         const {
             name, email, phone, dob, department, role,
-            joiningDate, status, baseSalary, accountNumber, ifsc,
+            joiningDate, status, baseSalary, commission, accountNumber, ifsc,
             trainerConfig, salesConfig, managerConfig, documents
         } = req.body;
 
@@ -242,6 +242,7 @@ const createStaff = async (req, res) => {
                 department,
                 joinedDate: joiningDate ? new Date(joiningDate) : new Date(),
                 baseSalary: baseSalary ? parseFloat(baseSalary) : null,
+                commission: commission ? parseFloat(commission) : 0,
                 accountNumber,
                 ifsc,
                 config: config || {},
@@ -1134,6 +1135,38 @@ const updateLeaveStatus = async (req, res) => {
     }
 };
 
+const getTenantSettings = async (req, res) => {
+    try {
+        const { tenantId } = req.user;
+        let settings = await prisma.tenantSettings.findUnique({
+            where: { tenantId }
+        });
+
+        if (!settings) {
+            settings = await prisma.tenantSettings.create({
+                data: { tenantId }
+            });
+        }
+
+        res.json(settings);
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+
+const updateTenantSettings = async (req, res) => {
+    try {
+        const { tenantId } = req.user;
+        const updated = await prisma.tenantSettings.update({
+            where: { tenantId },
+            data: req.body
+        });
+        res.json(updated);
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+
 module.exports = {
     getAllMembers,
     addMember,
@@ -1189,5 +1222,7 @@ module.exports = {
     getProfile,
     updateProfile,
     getLeaveRequests,
-    updateLeaveStatus
+    updateLeaveStatus,
+    getTenantSettings,
+    updateTenantSettings
 };

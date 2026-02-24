@@ -45,12 +45,14 @@ model Tenant {
   settings            TenantSettings?
   Announcement        Announcement[]
   Reward              Reward[]
+  RewardCatalog       RewardCatalog[]
   Feedback            Feedback[]
   Attendance          Attendance[]
   LeaveRequest        LeaveRequest[]
   TrainerAvailability TrainerAvailability[]
   dietPlans           DietPlan[]
   workoutPlans        WorkoutPlan[]
+  serviceRequests     ServiceRequest[]
 
   @@map("tenant")
 }
@@ -71,6 +73,7 @@ model User {
   // Staff Specific Fields
   department    String?
   baseSalary    Decimal? @db.Decimal(10, 2)
+  commission    Decimal? @db.Decimal(5, 2) @default(0.00)
   accountNumber String?
   ifsc          String?
   config        Json? // To store trainerConfig, salesConfig, managerConfig
@@ -172,8 +175,15 @@ model SaaSSettings {
   creditsPerBooking  Int     @default(1)
   maxBookingsPerDay  Int     @default(2)
   maxBookingsPerWeek Int     @default(10)
-  cancellationWindow Int     @default(4) // Hours
-  advanceBookingDays Int     @default(7)
+
+  // Classes specific
+  classCancellationWindow Int     @default(4) // Hours
+  classAdvanceBookingDays Int     @default(7)
+
+  // Benfits specific
+  benefitCancellationWindow Int     @default(24) // Hours
+  benefitAdvanceBookingDays Int     @default(14)
+
   penaltyEnabled     Boolean @default(true)
   penaltyCredits     Int     @default(1)
 
@@ -247,6 +257,12 @@ model Member {
   Feedback Feedback[]
   dietPlans DietPlan[]
   workoutPlans WorkoutPlan[]
+  serviceRequests ServiceRequest[]
+
+  cards          Json?
+
+  storeOrders    StoreOrder[]
+  invoices       Invoice[]
 
   @@map("member")
 }
@@ -417,6 +433,7 @@ model Invoice {
   status        String    @default("Unpaid") // Paid, Unpaid, Partial, Cancelled
   dueDate       DateTime
   paidDate      DateTime?
+  member        Member    @relation(fields: [memberId], references: [id])
 
   @@map("invoice")
 }
@@ -569,6 +586,15 @@ model TenantSettings {
   currency        String  @default("USD")
   whatsappEnabled Boolean @default(false)
 
+  // Developer & Integration Settings
+  webhooks           Json? // { payment: '', whatsapp: '', attendance: '', secret: '' }
+  
+  // Payment Gateways & APIs
+  apiKeys            Json? // { razorpay: { key: '', secret: '' }, sms: '', whatsapp: '' }
+  
+  // Message Templates
+  messageTemplates Json? // Array of { id, name, content, trigger }
+
   @@map("tenantsettings")
 }
 
@@ -586,6 +612,18 @@ model Reward {
   @@map("reward")
 }
 
+model RewardCatalog {
+  id          Int      @id @default(autoincrement())
+  tenantId    Int
+  tenant      Tenant   @relation(fields: [tenantId], references: [id])
+  name        String
+  points      Int
+  description String   @db.Text
+  status      String   @default("Active")
+
+  @@map("rewardcatalog")
+}
+
 model Feedback {
   id       Int      @id @default(autoincrement())
   tenantId Int?
@@ -598,6 +636,25 @@ model Feedback {
   date     DateTime @default(now())
 
   @@map("feedback")
+}
+
+model ServiceRequest {
+  id        Int      @id @default(autoincrement())
+  tenantId  Int      @default(1)
+  tenant    Tenant   @relation(fields: [tenantId], references: [id])
+  memberId  Int
+  member    Member   @relation(fields: [memberId], references: [id])
+  
+  type      String   // Freeze Request, Trainer Change, etc.
+  details   String?  @db.Text
+  status    String   @default("Pending") // Pending, Approved, Rejected
+  rawType   String?  // Freeze, TrainerChange, General
+  date      DateTime @default(now())
+  
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("service_request")
 }
 
 model DietPlan {
@@ -647,4 +704,55 @@ model WorkoutPlan {
   updatedAt      DateTime @updatedAt
 
   @@map("workout_plan")
+}
+
+model StoreProduct {
+  id            Int      @id @default(autoincrement())
+  tenantId      Int      @default(1)
+  name          String
+  category      String
+  price         Decimal  @db.Decimal(10, 2)
+  originalPrice Decimal? @db.Decimal(10, 2)
+  rating        Decimal? @db.Decimal(2, 1) @default(5.0)
+  image         String?  @db.Text
+  description   String?  @db.Text
+  stock         Int      @default(0)
+  status        String   @default("Active") // Active, Out of Stock, Inactive
+
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  
+  orderItems    StoreOrderItem[]
+
+  @@map("store_product")
+}
+
+model StoreOrder {
+  id         String   @id @default(uuid())
+  tenantId   Int      @default(1)
+  memberId   Int
+  member     Member   @relation(fields: [memberId], references: [id])
+  itemsCount Int      @default(0)
+  total      Decimal  @db.Decimal(10, 2)
+  status     String   @default("Processing") // Processing, Delivered, Cancelled
+  date       DateTime @default(now())
+
+  items      StoreOrderItem[]
+
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@map("store_order")
+}
+
+model StoreOrderItem {
+  id         Int          @id @default(autoincrement())
+  orderId    String
+  order      StoreOrder   @relation(fields: [orderId], references: [id])
+  productId  Int
+  product    StoreProduct @relation(fields: [productId], references: [id])
+  quantity   Int          @default(1)
+  priceAtBuy Decimal      @db.Decimal(10, 2) // Stored to prevent historical price changes from affecting past orders
+
+  @@map("store_order_item")
 }

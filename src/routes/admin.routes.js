@@ -55,16 +55,24 @@ const {
     getProfile,
     updateProfile,
     getLeaveRequests,
-    updateLeaveStatus
+    updateLeaveStatus,
+    getTenantSettings,
+    updateTenantSettings
 } = require('../controllers/admin.controller');
+const { getTrainerRequests, updateTrainerRequest, updateStaffMember, deleteStaffMember } = require('../controllers/superadmin.controller');
 const { protect, authorize } = require('../middleware/auth.middleware');
 
 const router = express.Router();
+
 
 router.use(protect);
 // Default: BRANCH_ADMIN and MANAGER can access everything
 // STAFF gets read-only access to specific routes defined below with inline authorize
 router.use(authorize('BRANCH_ADMIN', 'MANAGER', 'STAFF'));
+
+// Settings
+router.get('/settings/tenant', authorize('BRANCH_ADMIN', 'MANAGER'), getTenantSettings);
+router.patch('/settings/tenant', authorize('BRANCH_ADMIN', 'MANAGER'), updateTenantSettings);
 
 // Members — STAFF can view only, cannot create/edit/delete
 router.get('/members', getAllMembers);
@@ -109,6 +117,11 @@ router.get('/reports/attendance', authorize('BRANCH_ADMIN', 'MANAGER'), getAtten
 router.get('/dashboard-cards', fetchBranchDashboardCards);
 router.get('/staff', getAllStaff);
 router.post('/staff', authorize('BRANCH_ADMIN', 'MANAGER'), createStaff);
+router.get('/requests/trainers', authorize('BRANCH_ADMIN', 'MANAGER'), getTrainerRequests);
+router.patch('/requests/trainers/:id', authorize('BRANCH_ADMIN', 'MANAGER'), updateTrainerRequest);
+router.patch('/staff/:id', authorize('BRANCH_ADMIN', 'MANAGER'), updateStaffMember);
+router.delete('/staff/:id', authorize('BRANCH_ADMIN', 'MANAGER'), deleteStaffMember);
+
 
 // Leave Requests (Staff/HR)
 router.get('/leave-requests', authorize('BRANCH_ADMIN', 'MANAGER'), getLeaveRequests);

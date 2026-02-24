@@ -20,7 +20,7 @@ exports.getAllRewards = async (req, res) => {
         const formatted = rewards.map(r => ({
             id: r.id,
             name: r.name,
-            member: r.member ? `${r.member.firstName} ${r.member.lastName}` : 'Unknown Member',
+            member: r.member ? r.member.name : 'Unknown Member',
             points: r.points,
             description: r.description,
             date: new Date(r.date).toLocaleDateString()

@@ -589,8 +589,13 @@ const getBookingSettings = async (req, res) => {
             creditsPerBooking: settings?.creditsPerBooking,
             maxBookingsPerDay: settings?.maxBookingsPerDay,
             maxBookingsPerWeek: settings?.maxBookingsPerWeek,
-            cancellationWindow: settings?.cancellationWindow,
-            advanceBookingDays: settings?.advanceBookingDays,
+
+            // New differentiated rules
+            classCancellationWindow: settings?.classCancellationWindow,
+            classAdvanceBookingDays: settings?.classAdvanceBookingDays,
+            benefitCancellationWindow: settings?.benefitCancellationWindow,
+            benefitAdvanceBookingDays: settings?.benefitAdvanceBookingDays,
+
             penaltyEnabled: settings?.penaltyEnabled,
             penaltyCredits: settings?.penaltyCredits
         });
@@ -612,8 +617,13 @@ const updateBookingSettings = async (req, res) => {
                 creditsPerBooking: parseInt(req.body.creditsPerBooking),
                 maxBookingsPerDay: parseInt(req.body.maxBookingsPerDay),
                 maxBookingsPerWeek: parseInt(req.body.maxBookingsPerWeek),
-                cancellationWindow: parseInt(req.body.cancellationWindow),
-                advanceBookingDays: parseInt(req.body.advanceBookingDays),
+
+                // Differentiated Windows
+                classCancellationWindow: parseInt(req.body.classCancellationWindow),
+                classAdvanceBookingDays: parseInt(req.body.classAdvanceBookingDays),
+                benefitCancellationWindow: parseInt(req.body.benefitCancellationWindow),
+                benefitAdvanceBookingDays: parseInt(req.body.benefitAdvanceBookingDays),
+
                 penaltyEnabled: req.body.penaltyEnabled,
                 penaltyCredits: parseInt(req.body.penaltyCredits)
             }
@@ -668,7 +678,9 @@ const addStaffMember = async (req, res) => {
                 ...safeUserData,
                 password: hashedPassword,
                 role,
-                tenantId: tenantId || null
+                tenantId: tenantId || null,
+                baseSalary: safeUserData.baseSalary ? parseFloat(safeUserData.baseSalary) : null,
+                commission: safeUserData.commission ? parseFloat(safeUserData.commission) : 0
             }
         });
         res.status(201).json(newStaff);

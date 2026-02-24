@@ -9,10 +9,9 @@ const { protect, authorize } = require('../middleware/auth.middleware');
 const router = express.Router();
 
 router.use(protect);
-router.use(authorize('SUPER_ADMIN', 'BRANCH_ADMIN', 'MANAGER', 'STAFF'));
 
-router.get('/', getAllFeedback);
-router.post('/', addFeedback);
-router.patch('/:id/status', updateFeedbackStatus);
+router.get('/', authorize('SUPER_ADMIN', 'BRANCH_ADMIN', 'MANAGER', 'STAFF'), getAllFeedback);
+router.post('/', authorize('SUPER_ADMIN', 'BRANCH_ADMIN', 'MANAGER', 'STAFF', 'MEMBER'), addFeedback);
+router.patch('/:id/status', authorize('SUPER_ADMIN', 'BRANCH_ADMIN', 'MANAGER', 'STAFF'), updateFeedbackStatus);
 
 module.exports = router;

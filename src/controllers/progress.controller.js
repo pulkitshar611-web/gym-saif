@@ -3,12 +3,29 @@ const prisma = require('../config/prisma');
 
 const getProgress = async (req, res) => {
     try {
-        const member = await prisma.member.findUnique({
-            where: { userId: req.user.id }
-        });
+        let member;
+
+        if (req.user.role === 'TRAINER') {
+            const memberId = req.query.memberId || req.body.memberId;
+            if (!memberId) {
+                return res.status(400).json({ message: 'memberId is required for trainers' });
+            }
+            member = await prisma.member.findUnique({
+                where: { id: parseInt(memberId) }
+            });
+        } else {
+            member = await prisma.member.findUnique({
+                where: { userId: req.user.id }
+            });
+        }
 
         if (!member) {
             return res.status(404).json({ message: 'Member profile not found' });
+        }
+
+        // Check authorization: if trainer, must be the assigned trainer
+        if (req.user.role === 'TRAINER' && member.trainerId !== req.user.id) {
+            return res.status(403).json({ message: 'You are not authorized to view progress for this member' });
         }
 
         const progressLogs = await prisma.memberProgress.findMany({
@@ -41,6 +58,11 @@ const getMemberProgressById = async (req, res) => {
             return res.status(404).json({ message: 'Member not found' });
         }
 
+        // Check authorization: trainer must be assigned
+        if (req.user.role === 'TRAINER' && member.trainerId !== req.user.id) {
+            return res.status(403).json({ message: 'You are not assigned to this member' });
+        }
+
         const progressLogs = await prisma.memberProgress.findMany({
             where: { memberId: member.id },
             orderBy: { date: 'asc' }
@@ -61,14 +83,29 @@ const getMemberProgressById = async (req, res) => {
 
 const logProgress = async (req, res) => {
     try {
-        const { weight, bodyFat, measurements, photos, notes, date } = req.body;
+        const { weight, bodyFat, measurements, photos, notes, date, memberId: providedMemberId } = req.body;
+        let member;
 
-        const member = await prisma.member.findUnique({
-            where: { userId: req.user.id }
-        });
+        if (req.user.role === 'TRAINER') {
+            if (!providedMemberId) {
+                return res.status(400).json({ message: 'memberId is required for trainers' });
+            }
+            member = await prisma.member.findUnique({
+                where: { id: parseInt(providedMemberId) }
+            });
+        } else {
+            member = await prisma.member.findUnique({
+                where: { userId: req.user.id }
+            });
+        }
 
         if (!member) {
             return res.status(404).json({ message: 'Member profile not found' });
+        }
+
+        // Check authorization: if trainer, must be the assigned trainer
+        if (req.user.role === 'TRAINER' && member.trainerId !== req.user.id) {
+            return res.status(403).json({ message: 'You are not authorized to log progress for this member' });
         }
 
         const newProgress = await prisma.memberProgress.create({

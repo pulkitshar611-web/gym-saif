@@ -216,6 +216,34 @@ CREATE TABLE `workout_plan` (
     PRIMARY KEY (`id`)
 ) DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 
+-- RedefineIndex
+DROP INDEX `Invoice_invoiceNumber_key` ON `invoice`;
+CREATE UNIQUE INDEX `invoice_invoiceNumber_key` ON `invoice`(`invoiceNumber`);
+
+-- RedefineIndex
+DROP INDEX `Member_memberId_key` ON `member`;
+CREATE UNIQUE INDEX `member_memberId_key` ON `member`(`memberId`);
+
+-- RedefineIndex
+DROP INDEX `Member_userId_key` ON `member`;
+CREATE UNIQUE INDEX `member_userId_key` ON `member`(`userId`);
+
+-- RedefineIndex
+DROP INDEX `SaasPayment_paymentId_key` ON `saaspayment`;
+CREATE UNIQUE INDEX `saaspayment_paymentId_key` ON `saaspayment`(`paymentId`);
+
+-- RedefineIndex
+DROP INDEX `TenantSettings_tenantId_key` ON `tenantsettings`;
+CREATE UNIQUE INDEX `tenantsettings_tenantId_key` ON `tenantsettings`(`tenantId`);
+
+-- RedefineIndex
+DROP INDEX `User_email_key` ON `user`;
+CREATE UNIQUE INDEX `user_email_key` ON `user`(`email`);
+
+-- RedefineIndex
+DROP INDEX `Wallet_memberId_key` ON `wallet`;
+CREATE UNIQUE INDEX `wallet_memberId_key` ON `wallet`(`memberId`);
+
 -- AddForeignKey
 ALTER TABLE `user` ADD CONSTRAINT `user_tenantId_fkey` FOREIGN KEY (`tenantId`) REFERENCES `tenant`(`id`) ON DELETE SET NULL ON UPDATE CASCADE;
 
@@ -345,30 +373,3 @@ ALTER TABLE `workout_plan` ADD CONSTRAINT `workout_plan_trainerId_fkey` FOREIGN 
 -- AddForeignKey
 ALTER TABLE `workout_plan` ADD CONSTRAINT `workout_plan_clientId_fkey` FOREIGN KEY (`clientId`) REFERENCES `member`(`id`) ON DELETE RESTRICT ON UPDATE CASCADE;
 
--- RedefineIndex
-CREATE UNIQUE INDEX `invoice_invoiceNumber_key` ON `invoice`(`invoiceNumber`);
-DROP INDEX `Invoice_invoiceNumber_key` ON `invoice`;
-
--- RedefineIndex
-CREATE UNIQUE INDEX `member_memberId_key` ON `member`(`memberId`);
-DROP INDEX `Member_memberId_key` ON `member`;
-
--- RedefineIndex
-CREATE UNIQUE INDEX `member_userId_key` ON `member`(`userId`);
-DROP INDEX `Member_userId_key` ON `member`;
-
--- RedefineIndex
-CREATE UNIQUE INDEX `saaspayment_paymentId_key` ON `saaspayment`(`paymentId`);
-DROP INDEX `SaasPayment_paymentId_key` ON `saaspayment`;
-
--- RedefineIndex
-CREATE UNIQUE INDEX `tenantsettings_tenantId_key` ON `tenantsettings`(`tenantId`);
-DROP INDEX `TenantSettings_tenantId_key` ON `tenantsettings`;
-
--- RedefineIndex
-CREATE UNIQUE INDEX `user_email_key` ON `user`(`email`);
-DROP INDEX `User_email_key` ON `user`;
-
--- RedefineIndex
-CREATE UNIQUE INDEX `wallet_memberId_key` ON `wallet`(`memberId`);
-DROP INDEX `Wallet_memberId_key` ON `wallet`;

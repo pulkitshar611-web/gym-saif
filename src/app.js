@@ -60,6 +60,9 @@ app.use('/api/v1/feedback', feedbackRoutes);
 const dashboardRoutes = require('./routes/dashboard.routes');
 app.use('/api/v1/dashboard', dashboardRoutes);
 
+const storeRoutes = require('./routes/store.routes');
+app.use('/api/v1/store', storeRoutes);
+
 // Base Route
 app.get('/', (req, res) => {
     res.json({ message: 'Gym CRM API is running' });
