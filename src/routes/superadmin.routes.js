@@ -52,20 +52,27 @@ const {
     deleteDevice
 } = require('../controllers/superadmin.controller');
 const { protect, authorize } = require('../middleware/auth.middleware');
+const { checkSaaSLimit } = require('../middleware/saas.middleware');
 
 const router = express.Router();
 
 router.use(protect);
+
+// Gyms - Allow both Superadmin and Branch Admin (Branch Admin filtered in controller)
+router.get('/gyms', authorize('SUPER_ADMIN', 'BRANCH_ADMIN', 'MANAGER'), getAllGyms);
+router.post('/gyms', authorize('SUPER_ADMIN', 'BRANCH_ADMIN'), checkSaaSLimit('branches'), addGym);
+router.patch('/gyms/:id', authorize('SUPER_ADMIN', 'BRANCH_ADMIN'), updateGym);
+router.delete('/gyms/:id', authorize('SUPER_ADMIN', 'BRANCH_ADMIN'), deleteGym);
+router.patch('/gyms/:id/toggle-status', authorize('SUPER_ADMIN', 'BRANCH_ADMIN'), toggleGymStatus);
+
+// Restrict all other routes to SUPER_ADMIN only
 router.use(authorize('SUPER_ADMIN'));
 
 router.get('/profile', getProfile);
 router.patch('/profile', updateProfile);
 
-router.get('/gyms', getAllGyms);
-router.post('/gyms', addGym);
-router.patch('/gyms/:id', updateGym);
-router.delete('/gyms/:id', deleteGym);
-router.patch('/gyms/:id/toggle-status', toggleGymStatus);
+// Removed individual gym routes from here as they are defined above with custom auth
+
 
 router.get('/plans', getAllPlans);
 router.post('/plans', addPlan);

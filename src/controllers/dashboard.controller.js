@@ -17,17 +17,86 @@ exports.getManagerDashboard = async (req, res) => {
             where: { tenantId, status: 'Overdue' }
         });
 
-        // Basic attendance data
-        const attendance = [
-            { id: 1, name: 'Morning Yoga', time: '07:00 AM', attendees: Math.floor(activeMembers / 10), capacity: 15 },
-            { id: 2, name: 'HIIT Blast', time: '06:00 PM', attendees: Math.floor(activeMembers / 8), capacity: 20 },
-        ];
+        // Financials
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+        const tomorrow = new Date(today);
+        tomorrow.setDate(tomorrow.getDate() + 1);
+
+        // Fetch Today's Classes (Attendance substitute)
+        const realClasses = await prisma.class.findMany({
+            where: { tenantId },
+            take: 3
+        }).catch(() => []);
+
+        const attendance = realClasses.map((cls, i) => ({
+            id: cls.id,
+            name: cls.name,
+            time: cls.startTime || '10:00 AM',
+            attendees: 0, // Should be calculated using Bookings relation if extended
+            capacity: cls.capacity || 20
+        }));
+
+        // Fetch Tasks and Notices
+        const tasksAndNotices = [];
+        const maintenanceTasks = await prisma.maintenanceRequest.findMany({
+            where: { equipment: { tenantId }, status: { not: 'Resolved' } },
+            take: 1,
+            include: { equipment: true }
+        }).catch(() => []);
+
+        maintenanceTasks.forEach(t => {
+            tasksAndNotices.push({
+                id: t.id,
+                type: 'urgent',
+                title: 'Equipment Service Due',
+                description: `${t.equipment?.name || 'Equipment'} needs maintenance.`,
+                dueDate: new Date(t.createdAt).toLocaleDateString()
+            });
+        });
+
+        // Remove fallback
+
+
+
+        const todayInvoices = await prisma.invoice.findMany({
+            where: { tenantId, paidDate: { gte: today, lt: tomorrow } }
+        });
+        const collectionToday = todayInvoices.reduce((sum, inv) => sum + Number(inv.amount), 0);
+
+        const overdueInvoices = await prisma.invoice.findMany({
+            where: { tenantId, status: 'Overdue' }
+        });
+        const pendingDuesAmount = overdueInvoices.reduce((sum, inv) => sum + Number(inv.amount), 0);
+
+        const expenses = await prisma.expense.findMany({
+            where: { tenantId, date: { gte: today, lt: tomorrow } }
+        }).catch(() => []); // In case Expense model doesn't exist yet
+        const localExpenses = expenses.reduce((sum, exp) => sum + Number(exp.amount), 0);
+
+        // Equipment Stats
+        const equipmentList = await prisma.equipment.findMany({
+            where: { tenantId }
+        }).catch(() => []);
+
+        const totalAssets = equipmentList.length;
+        const outOfOrder = equipmentList.filter(eq => eq.status === 'Maintenance' || eq.status === 'Broken').length;
+        const operational = totalAssets - outOfOrder;
 
         res.json({
             activeMembers,
             classesToday,
             paymentsDue,
-            attendance
+            attendance,
+            collectionToday,
+            pendingDuesAmount,
+            localExpenses,
+            equipmentStats: {
+                totalAssets,
+                operational,
+                outOfOrder
+            },
+            tasksAndNotices
         });
     } catch (error) {
         console.error('Manager Dashboard Error:', error);

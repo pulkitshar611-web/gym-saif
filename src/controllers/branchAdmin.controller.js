@@ -3,21 +3,23 @@ const prisma = require('../config/prisma');
 // Get Dashboard Stats
 const getDashboardStats = async (req, res) => {
     try {
-        const tenantId = req.user.tenantId;
+        const { tenantId, role } = req.user;
 
-        if (!tenantId) {
+        if (!tenantId && role !== 'SUPER_ADMIN') {
             return res.status(400).json({ message: 'Tenant ID not found for user' });
         }
 
+        const whereClause = role === 'SUPER_ADMIN' ? {} : { tenantId };
+
         // 1. Total Members
         const totalMembers = await prisma.member.count({
-            where: { tenantId }
+            where: whereClause
         });
 
         // 2. Active Trainers
         const activeTrainers = await prisma.user.count({
             where: {
-                tenantId,
+                ...whereClause,
                 role: 'TRAINER',
                 status: 'Active'
             }
@@ -29,7 +31,7 @@ const getDashboardStats = async (req, res) => {
 
         const todaysCheckIns = await prisma.attendance.count({
             where: {
-                user: { tenantId },
+                user: role === 'SUPER_ADMIN' ? {} : { tenantId },
                 checkIn: { gte: startOfDay }
             }
         });
@@ -41,11 +43,42 @@ const getDashboardStats = async (req, res) => {
 
         const revenue = await prisma.invoice.aggregate({
             where: {
-                tenantId,
+                ...whereClause,
                 status: 'Paid',
                 paidDate: { gte: startOfMonth }
             },
             _sum: { amount: true }
+        });
+
+        // 5. Equipment Data
+        const equipmentData = await prisma.equipment.findMany({
+            where: whereClause,
+            select: { id: true, name: true, status: true, category: true }
+        });
+
+        // 6. Security Risks
+        const defaulterCheckIns = await prisma.attendance.count({
+            where: {
+                user: {
+                    ...(role === 'SUPER_ADMIN' ? {} : { tenantId }),
+                    status: 'Inactive'
+                },
+                checkIn: { gte: startOfDay }
+            }
+        });
+
+        const nextWeek = new Date();
+        nextWeek.setDate(nextWeek.getDate() + 7);
+
+        const expiringSoonCount = await prisma.member.count({
+            where: {
+                ...whereClause,
+                status: 'Active',
+                expiryDate: {
+                    gte: startOfDay,
+                    lte: nextWeek
+                }
+            }
         });
 
         res.json({
@@ -54,7 +87,13 @@ const getDashboardStats = async (req, res) => {
                 { id: 2, title: 'Active Trainers', value: activeTrainers, icon: 'Users', trend: 'Current', color: 'success' },
                 { id: 3, title: 'Today Check-ins', value: todaysCheckIns, icon: 'CheckCircle', trend: 'Today', color: 'primary' },
                 { id: 4, title: 'Branch Revenue', value: `₹${revenue._sum.amount || 0}`, icon: 'DollarSign', trend: 'This Month', color: 'success' },
-            ]
+            ],
+            equipment: equipmentData,
+            risks: {
+                defaulters: defaulterCheckIns,
+                expiringSoon: expiringSoonCount,
+                manualOverrides: 0
+            }
         });
 
     } catch (error) {

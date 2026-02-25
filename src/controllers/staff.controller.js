@@ -2,8 +2,10 @@ const prisma = require('../config/prisma');
 
 const getPaymentHistory = async (req, res) => {
     try {
+        const { tenantId, role } = req.user;
+        const where = role === 'SUPER_ADMIN' ? { status: 'Paid' } : { tenantId, status: 'Paid' };
         const invoices = await prisma.invoice.findMany({
-            where: { tenantId: req.user.tenantId, status: 'Paid' },
+            where,
             orderBy: { paidDate: 'desc' }
         });
         const mapped = await Promise.all(invoices.map(async inv => {
@@ -27,14 +29,21 @@ const getPaymentHistory = async (req, res) => {
 const collectPayment = async (req, res) => {
     try {
         const { memberName, amount, paymentMode, plan } = req.body;
+        const { tenantId, role } = req.user;
+
+        if (!tenantId && role !== 'SUPER_ADMIN') {
+            return res.status(400).json({ message: 'Tenant ID required' });
+        }
+
         // Mocking an invoice creation for the collected payment. In a real system you need the exact memberId.
+        const memberWhere = role === 'SUPER_ADMIN' ? { name: memberName } : { name: memberName, tenantId };
         const member = await prisma.member.findFirst({
-            where: { name: memberName, tenantId: req.user.tenantId }
+            where: memberWhere
         });
 
         const invoice = await prisma.invoice.create({
             data: {
-                tenantId: req.user.tenantId,
+                tenantId: tenantId || member?.tenantId || 1,
                 invoiceNumber: `INV-${Date.now()}`,
                 memberId: member ? member.id : 1, // Fallback safely for now
                 amount,
@@ -54,16 +63,22 @@ const searchMembers = async (req, res) => {
     try {
         const { search } = req.query;
         if (!search) return res.json([]);
+        const { tenantId, role } = req.user;
+
+        const where = {
+            OR: [
+                { name: { contains: search } },
+                { memberId: { contains: search } },
+                { phone: { contains: search } }
+            ]
+        };
+
+        if (role !== 'SUPER_ADMIN') {
+            where.tenantId = tenantId;
+        }
 
         const members = await prisma.member.findMany({
-            where: {
-                tenantId: req.user.tenantId,
-                OR: [
-                    { name: { contains: search } },
-                    { memberId: { contains: search } },
-                    { phone: { contains: search } }
-                ]
-            },
+            where,
             take: 10
         });
 
@@ -75,8 +90,10 @@ const searchMembers = async (req, res) => {
 
 const getMembers = async (req, res) => {
     try {
+        const { tenantId, role } = req.user;
+        const where = role === 'SUPER_ADMIN' ? {} : { tenantId };
         const members = await prisma.member.findMany({
-            where: { tenantId: req.user.tenantId }
+            where
         });
         res.json(members);
     } catch (error) {
@@ -126,8 +143,10 @@ const getAttendanceReport = async (req, res) => {
 
 const getBookingReport = async (req, res) => {
     try {
+        const { tenantId, role } = req.user;
+        const where = role === 'SUPER_ADMIN' ? {} : { class: { tenantId } };
         const bookings = await prisma.booking.findMany({
-            where: { class: { tenantId: req.user.tenantId } },
+            where,
             include: { member: true, class: { include: { trainer: true } } }
         });
 
@@ -197,12 +216,17 @@ const getTodaysCheckIns = async (req, res) => {
         const tomorrow = new Date(today);
         tomorrow.setDate(tomorrow.getDate() + 1);
 
+        const where = {
+            checkIn: { gte: today, lt: tomorrow },
+            type: 'Member'
+        };
+
+        if (req.user.role !== 'SUPER_ADMIN') {
+            where.user = { tenantId: req.user.tenantId };
+        }
+
         const checkIns = await prisma.attendance.findMany({
-            where: {
-                user: { tenantId: req.user.tenantId },
-                checkIn: { gte: today, lt: tomorrow },
-                type: 'Member'
-            },
+            where,
             include: { user: { include: { member: true } } },
             orderBy: { checkIn: 'desc' }
         });
@@ -240,7 +264,7 @@ const getTasks = async (req, res) => {
 
         if (myTasks === 'true') {
             where.assignedToId = req.user.id;
-        } else {
+        } else if (req.user.role !== 'SUPER_ADMIN') {
             where.assignedTo = { tenantId: req.user.tenantId };
         }
 
@@ -284,8 +308,13 @@ const updateTaskStatus = async (req, res) => {
 
 const getLockers = async (req, res) => {
     try {
+        const where = {};
+        if (req.user.role !== 'SUPER_ADMIN') {
+            where.tenantId = req.user.tenantId;
+        }
+
         const lockers = await prisma.locker.findMany({
-            where: { tenantId: req.user.tenantId }
+            where: where
         });
         res.json(lockers);
     } catch (error) {
@@ -323,12 +352,12 @@ const releaseLocker = async (req, res) => {
 
 const addLocker = async (req, res) => {
     try {
-        const { number } = req.body;
+        const { number, tenantId } = req.body;
         const newLocker = await prisma.locker.create({
             data: {
                 number,
                 status: 'Available',
-                tenantId: req.user.tenantId
+                tenantId: req.user.role === 'SUPER_ADMIN' ? (parseInt(tenantId) || null) : req.user.tenantId
             }
         });
         res.json(newLocker);

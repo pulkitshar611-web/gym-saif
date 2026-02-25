@@ -69,16 +69,34 @@ const getAllGyms = async (req, res) => {
 
 const addGym = async (req, res) => {
     try {
-        const { gymName, branchName, owner, phone, location, email } = req.body;
+        const { gymName, branchName, owner, email, phone, location, planId } = req.body;
+        let effectivePlanId = planId;
 
-        // Use a transaction to ensure both Tenant and User are created
+        // If a Branch Admin is adding a branch, they inherit their current plan
+        if (!effectivePlanId && req.user.role === 'BRANCH_ADMIN') {
+            const currentSub = await prisma.subscription.findFirst({
+                where: { tenantId: req.user.tenantId, status: 'Active' }
+            });
+            if (currentSub) {
+                effectivePlanId = currentSub.planId;
+            }
+        }
+
+        if (!effectivePlanId) {
+            return res.status(400).json({ message: 'SaaS Plan is required. If you are a Branch Admin, ensure you have an active subscription.' });
+        }
+
+        const plan = await prisma.saaSPlan.findUnique({ where: { id: parseInt(effectivePlanId) } });
+        if (!plan) return res.status(404).json({ message: 'SaaS Plan not found' });
+
+        // Use a transaction to ensure Tenant, User, and Subscription are created
         const result = await prisma.$transaction(async (tx) => {
             // 1. Create the Tenant (Gym)
             const tenant = await tx.tenant.create({
                 data: {
                     name: gymName,
                     branchName,
-                    owner: owner || email.split('@')[0], // Fallback if owner is missing
+                    owner: owner || email.split('@')[0],
                     phone,
                     location,
                     status: 'Active'
@@ -86,7 +104,6 @@ const addGym = async (req, res) => {
             });
 
             // 2. Create the Branch Admin User
-            // check if user with this email already exists
             const existingUser = await tx.user.findUnique({ where: { email } });
             if (existingUser) {
                 throw new Error('User with this email already exists.');
@@ -101,6 +118,27 @@ const addGym = async (req, res) => {
                     role: 'BRANCH_ADMIN',
                     tenantId: tenant.id,
                     status: 'Active'
+                }
+            });
+
+            // 3. Create the Subscription
+            const startDate = new Date();
+            const endDate = new Date();
+            if (plan.period === 'Monthly') {
+                endDate.setMonth(endDate.getMonth() + 1);
+            } else if (plan.period === 'Yearly') {
+                endDate.setFullYear(endDate.getFullYear() + 1);
+            }
+
+            await tx.subscription.create({
+                data: {
+                    tenantId: tenant.id,
+                    planId: plan.id,
+                    subscriber: owner || email.split('@')[0],
+                    startDate,
+                    endDate,
+                    status: 'Active',
+                    paymentStatus: 'Paid'
                 }
             });
 
@@ -252,7 +290,7 @@ const fetchDashboardCards = async (req, res) => {
             { id: 1, title: 'Total Gyms', value: totalGyms.toString(), trend: '+2 this month', color: 'primary' },
             { id: 2, title: 'Total Members', value: totalMembers.toLocaleString(), trend: '+15% vs last month', color: 'success' },
             { id: 3, title: 'Active Plans', value: activeSubs.toString(), trend: '85% retention', color: 'warning' },
-            { id: 4, title: 'Monthly Revenue', value: `$${revenueValue.toLocaleString()}`, trend: '+8% vs last month', color: 'success' }
+            { id: 4, title: 'Monthly Revenue', value: `₹${revenueValue.toLocaleString()}`, trend: '+8% vs last month', color: 'success' }
         ]);
     } catch (error) {
         res.status(500).json({ message: error.message });
@@ -264,7 +302,19 @@ const fetchDashboardCards = async (req, res) => {
 const getSubscriptions = async (req, res) => {
     try {
         const subs = await prisma.subscription.findMany();
-        res.json(subs);
+        const tenants = await prisma.tenant.findMany();
+        const plans = await prisma.saaSPlan.findMany();
+
+        const tenantMap = Object.fromEntries(tenants.map(t => [t.id, t.name]));
+        const planMap = Object.fromEntries(plans.map(p => [p.id, p.name]));
+
+        const formatted = subs.map(s => ({
+            ...s,
+            gym: tenantMap[s.tenantId] || 'Unknown Gym',
+            plan: planMap[s.planId] || 'Unknown Plan'
+        }));
+
+        res.json(formatted);
     } catch (error) {
         res.status(500).json({ message: error.message });
     }
@@ -703,12 +753,47 @@ const deleteStaffMember = async (req, res) => {
 const updateStaffMember = async (req, res) => {
     try {
         const { id } = req.params;
+        const {
+            name, email, phone, department, role,
+            joiningDate, status, baseSalary, commission, accountNumber, ifsc,
+            trainerConfig, salesConfig, managerConfig, documents
+        } = req.body;
+
+        const updateData = {};
+        if (name !== undefined) updateData.name = name;
+        if (email !== undefined) updateData.email = email;
+        if (phone !== undefined) updateData.phone = phone;
+        if (department !== undefined) updateData.department = department;
+        if (status !== undefined) updateData.status = status;
+        if (baseSalary !== undefined) updateData.baseSalary = baseSalary ? parseFloat(baseSalary) : null;
+        if (commission !== undefined) updateData.commission = commission ? parseFloat(commission) : 0;
+        if (accountNumber !== undefined) updateData.accountNumber = accountNumber;
+        if (ifsc !== undefined) updateData.ifsc = ifsc;
+        if (documents !== undefined) updateData.documents = documents;
+
+        if (joiningDate) {
+            updateData.joinedDate = new Date(joiningDate);
+        }
+
+        if (role) {
+            let mappedRole = role.toUpperCase();
+            if (role === 'Admin') mappedRole = 'BRANCH_ADMIN';
+            if (role === 'Sales' || role === 'Sales Professional' || role === 'Receptionist') mappedRole = 'STAFF';
+            updateData.role = mappedRole;
+
+            if (role === 'Trainer') updateData.config = trainerConfig || {};
+            else if (role === 'Sales') updateData.config = salesConfig || {};
+            else if (role === 'Manager') updateData.config = managerConfig || {};
+            else updateData.config = {};
+        }
+
         const updatedStaff = await prisma.user.update({
             where: { id: parseInt(id) },
-            data: req.body
+            data: updateData
         });
         res.json(updatedStaff);
     } catch (error) {
+        console.error('Error updating staff member:', error);
         res.status(500).json({ message: error.message });
     }
 };
@@ -792,14 +877,25 @@ const getTrainerRequests = async (req, res) => {
             }
         });
 
-        const formattedTrainers = trainers.map(t => ({
-            id: t.id,
-            name: t.name,
-            email: t.email,
-            phone: t.phone || 'N/A',
-            branch: t.tenant?.branchName || t.tenant?.name || 'Unknown',
-            status: t.status
-        }));
+        const formattedTrainers = trainers.map(t => {
+            let configObj = {};
+            if (t.config) {
+                try {
+                    configObj = typeof t.config === 'string' ? JSON.parse(t.config) : t.config;
+                } catch (e) { }
+            }
+            return {
+                id: t.id,
+                name: t.name,
+                email: t.email,
+                phone: t.phone || 'N/A',
+                branch: t.tenant?.branchName || t.tenant?.name || 'Unknown',
+                status: t.status,
+                baseSalary: t.baseSalary ? t.baseSalary.toString() : '',
+                commission: t.commission ? t.commission.toString() : '',
+                role: configObj.specialization || ''
+            };
+        });
 
         res.json(formattedTrainers);
     } catch (error) {

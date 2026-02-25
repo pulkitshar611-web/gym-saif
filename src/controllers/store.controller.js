@@ -1,17 +1,26 @@
 const { PrismaClient } = require('@prisma/client');
 const prisma = new PrismaClient();
+const cloudinary = require('../utils/cloudinary');
 
 exports.getProducts = async (req, res) => {
     try {
-        const { category, search } = req.query;
-        let where = { status: 'Active' };
+        const { category, search, allStatus } = req.query;
+        let where = {};
+
+        if (req.user && req.user.role !== 'SUPER_ADMIN') {
+            where.tenantId = req.user.tenantId;
+        }
+
+        if (allStatus !== 'true') {
+            where.status = { not: 'Inactive' };
+        }
 
         if (category && category !== 'All') {
             where.category = category;
         }
 
         if (search) {
-            where.name = { contains: search };
+            where.name = { contains: search, mode: 'insensitive' };
         }
 
         const products = await prisma.storeProduct.findMany({
@@ -21,6 +30,123 @@ exports.getProducts = async (req, res) => {
 
         res.json(products);
     } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+
+exports.addProduct = async (req, res) => {
+    try {
+        const { name, sku, category, price, stock, description, image, originalPrice } = req.body;
+        const tenantId = req.user.tenantId || 1;
+
+        // calculate status based on stock
+        let status = 'Active';
+        if (parseInt(stock) === 0) status = 'Inactive';
+        else if (parseInt(stock) <= 10) status = 'Low Stock';
+
+        // upload image if it's base64
+        let imageUrl = image;
+        if (image && image.startsWith('data:image')) {
+            const uploadRes = await cloudinary.uploader.upload(image, {
+                folder: 'gym/store/products'
+            });
+            imageUrl = uploadRes.secure_url;
+        }
+
+        const product = await prisma.storeProduct.create({
+            data: {
+                tenantId,
+                name,
+                sku,
+                category,
+                price: parseFloat(price),
+                stock: parseInt(stock),
+                status,
+                description,
+                image: imageUrl,
+                originalPrice: originalPrice ? parseFloat(originalPrice) : null,
+            }
+        });
+
+        res.status(201).json(product);
+    } catch (error) {
+        console.error("Create product error:", error);
+        res.status(500).json({ message: error.message });
+    }
+};
+
+exports.updateStock = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { stock } = req.body;
+
+        const status = parseInt(stock) === 0 ? 'Inactive' : (parseInt(stock) <= 10 ? 'Low Stock' : 'Active');
+
+        const updatedProduct = await prisma.storeProduct.update({
+            where: { id: parseInt(id) },
+            data: {
+                stock: parseInt(stock),
+                status
+            }
+        });
+
+        res.json(updatedProduct);
+    } catch (error) {
+        console.error("Update stock error:", error);
+        res.status(500).json({ message: error.message });
+    }
+};
+
+exports.updateProduct = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { name, sku, category, price, stock, description, image, originalPrice, status } = req.body;
+
+        // Auto calculate status if stock updated and status is not explicitly set to something else
+        let calculatedStatus = status || 'Active';
+        if (parseInt(stock) === 0) calculatedStatus = 'Inactive';
+        else if (parseInt(stock) <= 10 && calculatedStatus !== 'Inactive') calculatedStatus = 'Low Stock';
+
+        // upload image if it's base64
+        let imageUrl = image;
+        if (image && image.startsWith('data:image')) {
+            const uploadRes = await cloudinary.uploader.upload(image, {
+                folder: 'gym/store/products'
+            });
+            imageUrl = uploadRes.secure_url;
+        }
+
+        const product = await prisma.storeProduct.update({
+            where: { id: parseInt(id) },
+            data: {
+                name,
+                sku,
+                category,
+                price: parseFloat(price),
+                stock: parseInt(stock),
+                status: calculatedStatus,
+                description,
+                image: imageUrl,
+                originalPrice: originalPrice ? parseFloat(originalPrice) : null,
+            }
+        });
+
+        res.json(product);
+    } catch (error) {
+        console.error("Update product error:", error);
+        res.status(500).json({ message: error.message });
+    }
+};
+
+exports.deleteProduct = async (req, res) => {
+    try {
+        const { id } = req.params;
+        await prisma.storeProduct.delete({
+            where: { id: parseInt(id) }
+        });
+        res.json({ message: 'Product deleted successfully' });
+    } catch (error) {
+        console.error("Delete product error:", error);
         res.status(500).json({ message: error.message });
     }
 };

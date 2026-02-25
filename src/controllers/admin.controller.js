@@ -5,10 +5,10 @@ const prisma = require('../config/prisma');
 
 const getAllMembers = async (req, res) => {
     try {
-        const { tenantId } = req.user;
+        const { tenantId, role } = req.user;
         const { search, status } = req.query;
 
-        const where = { tenantId };
+        const where = role === 'SUPER_ADMIN' ? {} : { tenantId };
 
         if (status && status !== 'All') {
             where.status = status;
@@ -194,10 +194,23 @@ const getAllStaff = async (req, res) => {
         const { tenantId } = req.user;
         const staff = await prisma.user.findMany({
             where: {
-                tenantId,
+                tenantId: req.user.role === 'SUPER_ADMIN' ? undefined : req.user.tenantId,
                 role: { in: ['STAFF', 'TRAINER', 'MANAGER'] }
             }
         });
+        res.json(staff);
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+
+const getStaffById = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const staff = await prisma.user.findUnique({
+            where: { id: parseInt(id) }
+        });
+        if (!staff) return res.status(404).json({ message: 'Staff not found' });
         res.json(staff);
     } catch (error) {
         res.status(500).json({ message: error.message });
@@ -261,9 +274,9 @@ const createStaff = async (req, res) => {
 
 const getBookings = async (req, res) => {
     try {
-        const { tenantId } = req.user;
+        const where = req.user.role === 'SUPER_ADMIN' ? {} : { member: { tenantId: req.user.tenantId } };
         const bookings = await prisma.booking.findMany({
-            where: { member: { tenantId } },
+            where,
             include: { member: true, class: true }
         });
         res.json({ data: bookings, total: bookings.length });
@@ -274,9 +287,9 @@ const getBookings = async (req, res) => {
 
 const getBookingStats = async (req, res) => {
     try {
-        const { tenantId } = req.user;
-        const total = await prisma.booking.count({ where: { member: { tenantId } } });
-        const upcoming = await prisma.booking.count({ where: { member: { tenantId }, status: 'Upcoming' } });
+        const where = req.user.role === 'SUPER_ADMIN' ? {} : { member: { tenantId: req.user.tenantId } };
+        const total = await prisma.booking.count({ where });
+        const upcoming = await prisma.booking.count({ where: { ...where, status: 'Upcoming' } });
         res.json({ total, upcoming, completed: 0, cancelled: 0 });
     } catch (error) {
         res.status(500).json({ message: error.message });
@@ -381,17 +394,21 @@ const deleteBooking = async (req, res) => {
 
 const getTodaysBookings = async (req, res) => {
     try {
-        const { tenantId } = req.user;
+        const { tenantId, role } = req.user;
         const today = new Date();
         today.setHours(0, 0, 0, 0);
         const tomorrow = new Date(today);
         tomorrow.setDate(tomorrow.getDate() + 1);
 
+        const where = {
+            date: { gte: today, lt: tomorrow }
+        };
+        if (role !== 'SUPER_ADMIN') {
+            where.member = { tenantId };
+        }
+
         const bookings = await prisma.booking.findMany({
-            where: {
-                member: { tenantId },
-                date: { gte: today, lt: tomorrow }
-            },
+            where,
             include: { member: true, class: true }
         });
         res.json(bookings);
@@ -402,9 +419,9 @@ const getTodaysBookings = async (req, res) => {
 
 const getBookingCalendar = async (req, res) => {
     try {
-        const { tenantId } = req.user;
+        const where = req.user.role === 'SUPER_ADMIN' ? {} : { member: { tenantId: req.user.tenantId } };
         const bookings = await prisma.booking.findMany({
-            where: { member: { tenantId } },
+            where,
             include: { member: true, class: true }
         });
         res.json(bookings);
@@ -417,9 +434,10 @@ const getBookingCalendar = async (req, res) => {
 
 const getCheckIns = async (req, res) => {
     try {
-        const { tenantId } = req.user;
+        const { tenantId, role } = req.user;
+        const where = role === 'SUPER_ADMIN' ? {} : { user: { tenantId } };
         const attendance = await prisma.attendance.findMany({
-            where: { user: { tenantId } },
+            where,
             include: { user: true }
         });
         res.json({ data: attendance, total: attendance.length });
@@ -440,9 +458,10 @@ const deleteCheckIn = async (req, res) => {
 
 const getAttendanceStats = async (req, res) => {
     try {
-        const { tenantId } = req.user;
+        const { tenantId, role } = req.user;
+        const where = role === 'SUPER_ADMIN' ? {} : { user: { tenantId } };
         const currentlyIn = await prisma.attendance.count({
-            where: { user: { tenantId }, checkOut: null }
+            where: { ...where, checkOut: null }
         });
         res.json({ currentlyIn, totalToday: 0, membersToday: 0, staffToday: 0 });
     } catch (error) {
@@ -452,9 +471,10 @@ const getAttendanceStats = async (req, res) => {
 
 const getLiveCheckIn = async (req, res) => {
     try {
-        const { tenantId } = req.user;
+        const { tenantId, role } = req.user;
+        const where = role === 'SUPER_ADMIN' ? {} : { user: { tenantId } };
         const live = await prisma.attendance.findMany({
-            where: { user: { tenantId }, checkOut: null },
+            where: { ...where, checkOut: null },
             include: { user: true }
         });
         res.json(live);
@@ -467,9 +487,10 @@ const getLiveCheckIn = async (req, res) => {
 
 const getTasks = async (req, res) => {
     try {
-        const { tenantId } = req.user;
+        const { tenantId, role } = req.user;
+        const where = role === 'SUPER_ADMIN' ? {} : { creator: { tenantId } };
         const tasks = await prisma.task.findMany({
-            where: { creator: { tenantId } },
+            where,
             include: { assignedTo: true, creator: true }
         });
         res.json({ data: tasks, total: tasks.length });
@@ -480,9 +501,10 @@ const getTasks = async (req, res) => {
 
 const getTaskStats = async (req, res) => {
     try {
-        const { tenantId } = req.user;
-        const total = await prisma.task.count({ where: { creator: { tenantId } } });
-        const pending = await prisma.task.count({ where: { creator: { tenantId }, status: 'Pending' } });
+        const { tenantId, role } = req.user;
+        const where = role === 'SUPER_ADMIN' ? {} : { creator: { tenantId } };
+        const total = await prisma.task.count({ where });
+        const pending = await prisma.task.count({ where: { ...where, status: 'Pending' } });
         res.json({ total, pending, inProgress: 0, completed: 0 });
     } catch (error) {
         res.status(500).json({ message: error.message });
@@ -559,9 +581,10 @@ const assignTask = async (req, res) => {
 
 const getBookingReport = async (req, res) => {
     try {
-        const { tenantId } = req.user;
+        const { tenantId, role } = req.user;
+        const where = role === 'SUPER_ADMIN' ? {} : { member: { tenantId } };
         const bookings = await prisma.booking.findMany({
-            where: { member: { tenantId } },
+            where,
             include: { member: true, class: true }
         });
         res.json(bookings);
@@ -572,9 +595,10 @@ const getBookingReport = async (req, res) => {
 
 const getAttendanceReport = async (req, res) => {
     try {
-        const { tenantId } = req.user;
+        const { tenantId, role } = req.user;
+        const where = role === 'SUPER_ADMIN' ? {} : { user: { tenantId } };
         const attendance = await prisma.attendance.findMany({
-            where: { user: { tenantId } },
+            where,
             include: { user: true }
         });
         res.json(attendance);
@@ -587,9 +611,10 @@ const getAttendanceReport = async (req, res) => {
 
 const fetchBranchDashboardCards = async (req, res) => {
     try {
-        const { tenantId } = req.user;
-        const totalMembers = await prisma.member.count({ where: { tenantId } });
-        const activePlans = await prisma.member.count({ where: { tenantId, status: 'Active' } });
+        const { tenantId, role } = req.user;
+        const where = role === 'SUPER_ADMIN' ? {} : { tenantId };
+        const totalMembers = await prisma.member.count({ where });
+        const activePlans = await prisma.member.count({ where: { ...where, status: 'Active' } });
 
         res.json([
             { title: 'Total Members', value: totalMembers, change: '+0%', icon: 'users', color: 'blue' },
@@ -673,9 +698,9 @@ const giftDays = async (req, res) => {
 
 const getAllPlans = async (req, res) => {
     try {
-        const { tenantId } = req.user;
+        const where = req.user.role === 'SUPER_ADMIN' ? {} : { tenantId: req.user.tenantId };
         const plans = await prisma.membershipPlan.findMany({
-            where: { tenantId }
+            where
         });
         res.json(plans);
     } catch (error) {
@@ -745,9 +770,9 @@ const deletePlan = async (req, res) => {
 
 const getAllClasses = async (req, res) => {
     try {
-        const { tenantId } = req.user;
+        const where = req.user.role === 'SUPER_ADMIN' ? {} : { tenantId: req.user.tenantId };
         const classes = await prisma.class.findMany({
-            where: { tenantId },
+            where,
             include: {
                 bookings: true,
                 trainer: true
@@ -967,9 +992,10 @@ const createPayroll = async (req, res) => {
 
 const getPayrollHistory = async (req, res) => {
     try {
-        const { tenantId } = req.user;
+        const { tenantId, role } = req.user;
+        const where = role === 'SUPER_ADMIN' ? {} : { tenantId };
         const history = await prisma.payroll.findMany({
-            where: { tenantId },
+            where,
             include: {
                 tenant: { select: { name: true, branchName: true } }
             },
@@ -1083,9 +1109,10 @@ const updateProfile = async (req, res) => {
 // --- LEAVE MANAGEMENT ---
 const getLeaveRequests = async (req, res) => {
     try {
-        const { tenantId } = req.user;
+        const { tenantId, role } = req.user;
+        const where = role === 'SUPER_ADMIN' ? {} : { tenantId };
         const requests = await prisma.leaveRequest.findMany({
-            where: { tenantId },
+            where,
             include: { user: { select: { id: true, name: true, role: true } } },
             orderBy: { createdAt: 'desc' }
         });
@@ -1182,6 +1209,7 @@ module.exports = {
     updatePlan,
     deletePlan,
     getAllStaff,
+    getStaffById,
     createStaff,
     fetchBranchDashboardCards,
     getBookings,

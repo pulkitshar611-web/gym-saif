@@ -11,6 +11,7 @@ const {
     unfreezeMember,
     giftDays,
     getAllStaff,
+    getStaffById,
     createStaff,
     fetchBranchDashboardCards,
     getBookings,
@@ -61,6 +62,7 @@ const {
 } = require('../controllers/admin.controller');
 const { getTrainerRequests, updateTrainerRequest, updateStaffMember, deleteStaffMember } = require('../controllers/superadmin.controller');
 const { protect, authorize } = require('../middleware/auth.middleware');
+const { checkSaaSLimit } = require('../middleware/saas.middleware');
 
 const router = express.Router();
 
@@ -68,22 +70,22 @@ const router = express.Router();
 router.use(protect);
 // Default: BRANCH_ADMIN and MANAGER can access everything
 // STAFF gets read-only access to specific routes defined below with inline authorize
-router.use(authorize('BRANCH_ADMIN', 'MANAGER', 'STAFF'));
+router.use(authorize('SUPER_ADMIN', 'BRANCH_ADMIN', 'MANAGER', 'STAFF'));
 
 // Settings
-router.get('/settings/tenant', authorize('BRANCH_ADMIN', 'MANAGER'), getTenantSettings);
-router.patch('/settings/tenant', authorize('BRANCH_ADMIN', 'MANAGER'), updateTenantSettings);
+router.get('/settings/tenant', authorize('SUPER_ADMIN', 'BRANCH_ADMIN', 'MANAGER'), getTenantSettings);
+router.patch('/settings/tenant', authorize('SUPER_ADMIN', 'BRANCH_ADMIN', 'MANAGER'), updateTenantSettings);
 
 // Members — STAFF can view only, cannot create/edit/delete
 router.get('/members', getAllMembers);
-router.post('/members', authorize('BRANCH_ADMIN', 'MANAGER'), addMember);
+router.post('/members', authorize('SUPER_ADMIN', 'BRANCH_ADMIN', 'MANAGER'), checkSaaSLimit('members'), addMember);
 router.get('/members/:id', getMemberById);
-router.patch('/members/:id', authorize('BRANCH_ADMIN', 'MANAGER'), updateMember);
-router.delete('/members/:id', authorize('BRANCH_ADMIN', 'MANAGER'), deleteMember);
-router.patch('/members/:id/toggle-status', authorize('BRANCH_ADMIN', 'MANAGER'), toggleMemberStatus);
-router.patch('/members/:id/freeze', authorize('BRANCH_ADMIN', 'MANAGER'), freezeMember);
-router.patch('/members/:id/unfreeze', authorize('BRANCH_ADMIN', 'MANAGER'), unfreezeMember);
-router.patch('/members/:id/gift', authorize('BRANCH_ADMIN', 'MANAGER'), giftDays);
+router.patch('/members/:id', authorize('SUPER_ADMIN', 'BRANCH_ADMIN', 'MANAGER'), updateMember);
+router.delete('/members/:id', authorize('SUPER_ADMIN', 'BRANCH_ADMIN', 'MANAGER'), deleteMember);
+router.patch('/members/:id/toggle-status', authorize('SUPER_ADMIN', 'BRANCH_ADMIN', 'MANAGER'), toggleMemberStatus);
+router.patch('/members/:id/freeze', authorize('SUPER_ADMIN', 'BRANCH_ADMIN', 'MANAGER'), freezeMember);
+router.patch('/members/:id/unfreeze', authorize('SUPER_ADMIN', 'BRANCH_ADMIN', 'MANAGER'), unfreezeMember);
+router.patch('/members/:id/gift', authorize('SUPER_ADMIN', 'BRANCH_ADMIN', 'MANAGER'), giftDays);
 
 // Bookings
 router.get('/bookings', getBookings);
@@ -112,24 +114,25 @@ router.delete('/tasks/:id', deleteTask);
 router.post('/tasks/assign', assignTask);
 
 // Reports & Staff
-router.get('/reports/bookings', authorize('BRANCH_ADMIN', 'MANAGER'), getBookingReport);
-router.get('/reports/attendance', authorize('BRANCH_ADMIN', 'MANAGER'), getAttendanceReport);
+router.get('/reports/bookings', authorize('SUPER_ADMIN', 'BRANCH_ADMIN', 'MANAGER'), getBookingReport);
+router.get('/reports/attendance', authorize('SUPER_ADMIN', 'BRANCH_ADMIN', 'MANAGER'), getAttendanceReport);
 router.get('/dashboard-cards', fetchBranchDashboardCards);
 router.get('/staff', getAllStaff);
-router.post('/staff', authorize('BRANCH_ADMIN', 'MANAGER'), createStaff);
-router.get('/requests/trainers', authorize('BRANCH_ADMIN', 'MANAGER'), getTrainerRequests);
-router.patch('/requests/trainers/:id', authorize('BRANCH_ADMIN', 'MANAGER'), updateTrainerRequest);
-router.patch('/staff/:id', authorize('BRANCH_ADMIN', 'MANAGER'), updateStaffMember);
-router.delete('/staff/:id', authorize('BRANCH_ADMIN', 'MANAGER'), deleteStaffMember);
+router.get('/staff/:id', getStaffById);
+router.post('/staff', authorize('SUPER_ADMIN', 'BRANCH_ADMIN', 'MANAGER'), checkSaaSLimit('staff'), createStaff);
+router.get('/requests/trainers', authorize('SUPER_ADMIN', 'BRANCH_ADMIN', 'MANAGER'), getTrainerRequests);
+router.patch('/requests/trainers/:id', authorize('SUPER_ADMIN', 'BRANCH_ADMIN', 'MANAGER'), updateTrainerRequest);
+router.patch('/staff/:id', authorize('SUPER_ADMIN', 'BRANCH_ADMIN', 'MANAGER'), updateStaffMember);
+router.delete('/staff/:id', authorize('SUPER_ADMIN', 'BRANCH_ADMIN', 'MANAGER'), deleteStaffMember);
 
 
 // Leave Requests (Staff/HR)
-router.get('/leave-requests', authorize('BRANCH_ADMIN', 'MANAGER'), getLeaveRequests);
-router.patch('/leave-requests/:id/status', authorize('BRANCH_ADMIN', 'MANAGER'), updateLeaveStatus);
+router.get('/leave-requests', authorize('SUPER_ADMIN', 'BRANCH_ADMIN', 'MANAGER'), getLeaveRequests);
+router.patch('/leave-requests/:id/status', authorize('SUPER_ADMIN', 'BRANCH_ADMIN', 'MANAGER'), updateLeaveStatus);
 
 // Membership Plans
 router.get('/plans', getAllPlans);
-router.post('/plans', authorize('BRANCH_ADMIN', 'MANAGER'), createPlan);
+router.post('/plans', authorize('SUPER_ADMIN', 'BRANCH_ADMIN', 'MANAGER'), createPlan);
 router.patch('/plans/:id', updatePlan);
 router.delete('/plans/:id', deletePlan);
 

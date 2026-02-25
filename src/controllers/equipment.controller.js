@@ -119,8 +119,12 @@ const deleteEquipment = async (req, res) => {
 // Report Issue (Maintenance Request)
 const reportIssue = async (req, res) => {
     try {
-        const { equipmentId, issue, priority } = req.body;
+        const { equipmentId, issueType, severity, description, issue, priority } = req.body;
         const { tenantId, role } = req.user;
+
+        // Map payload fields (frontend sends issueType/severity/description)
+        const finalIssue = issue || `${issueType || 'Issue'}: ${description || ''}`.trim();
+        const finalPriority = priority || severity || 'Medium';
 
         // Verify equipment belongs to tenant
         const where = { id: parseInt(equipmentId) };
@@ -139,14 +143,14 @@ const reportIssue = async (req, res) => {
         const request = await prisma.maintenanceRequest.create({
             data: {
                 equipmentId: parseInt(equipmentId),
-                issue,
-                priority,
+                issue: finalIssue,
+                priority: finalPriority,
                 status: 'Pending'
             }
         });
 
         // Optionally update equipment status
-        if (priority === 'High' || priority === 'Critical') {
+        if (finalPriority === 'High' || finalPriority === 'Critical') {
             await prisma.equipment.update({
                 where: { id: parseInt(equipmentId) },
                 data: { status: 'Out of Order' }

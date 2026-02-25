@@ -19,7 +19,7 @@ const { protect, authorize } = require('../middleware/auth.middleware');
 const router = express.Router();
 
 router.use(protect);
-router.use(authorize('BRANCH_ADMIN'));
+router.use(authorize('SUPER_ADMIN', 'BRANCH_ADMIN'));
 
 router.get('/dashboard/stats', getDashboardStats);
 router.get('/dashboard/activities', getRecentActivities);

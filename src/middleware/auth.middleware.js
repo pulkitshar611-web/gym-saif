@@ -35,9 +35,11 @@ const authorize = (...roles) => {
         );
 
         if (!isAuthorized) {
-            console.warn(`Authorization failed: User ${req.user?.id} with role ${userRole} tried to access a route requiring [${roles.join(', ')}]`);
+            const msg = `Access Denied: Your role (${userRole}) does not have permission for this action. Required: [${roles.join(', ')}]`;
+            console.warn(`[AUTH] ${msg} | User: ${req.user?.id}`);
             return res.status(403).json({
-                message: `User role ${userRole} is not authorized to access this route`
+                message: msg,
+                code: 'UNAUTHORIZED_ROLE'
             });
         }
         next();

@@ -710,6 +710,7 @@ model StoreProduct {
   id            Int      @id @default(autoincrement())
   tenantId      Int      @default(1)
   name          String
+  sku           String?
   category      String
   price         Decimal  @db.Decimal(10, 2)
   originalPrice Decimal? @db.Decimal(10, 2)

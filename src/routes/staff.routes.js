@@ -23,7 +23,7 @@ const { protect, authorize } = require('../middleware/auth.middleware');
 const router = express.Router();
 
 router.use(protect);
-router.use(authorize('STAFF'));
+router.use(authorize('STAFF', 'SUPER_ADMIN', 'BRANCH_ADMIN', 'MANAGER'));
 
 // Members read-only
 router.get('/members', getMembers);
