@@ -96,6 +96,27 @@ const addMember = async (req, res) => {
                 benefits: benefits || []
             }
         });
+
+        // Auto-generate invoice if a plan is selected
+        if (planId) {
+            const plan = await prisma.membershipPlan.findUnique({
+                where: { id: parseInt(planId) }
+            });
+            if (plan) {
+                await prisma.invoice.create({
+                    data: {
+                        tenantId,
+                        invoiceNumber: `INV-${Date.now()}`,
+                        memberId: newMember.id,
+                        amount: plan.price,
+                        paymentMode: 'Cash',
+                        status: 'Unpaid',
+                        dueDate: new Date()
+                    }
+                });
+            }
+        }
+
         res.status(201).json(newMember);
     } catch (error) {
         res.status(500).json({ message: error.message });
@@ -107,7 +128,7 @@ const getMemberById = async (req, res) => {
         const { id } = req.params;
         const member = await prisma.member.findUnique({
             where: { id: parseInt(id) },
-            include: { trainer: true, tenant: true }
+            include: { trainer: true, tenant: true, plan: true }
         });
         res.json(member);
     } catch (error) {
@@ -491,9 +512,25 @@ const getTasks = async (req, res) => {
         const where = role === 'SUPER_ADMIN' ? {} : { creator: { tenantId } };
         const tasks = await prisma.task.findMany({
             where,
-            include: { assignedTo: true, creator: true }
+            include: {
+                assignedTo: { select: { id: true, name: true } },
+                creator: { select: { id: true, name: true } }
+            },
+            orderBy: { dueDate: 'asc' }
         });
-        res.json({ data: tasks, total: tasks.length });
+
+        const formatted = tasks.map(t => ({
+            id: t.id,
+            title: t.title,
+            assignedTo: t.assignedTo?.name || 'Unknown',
+            assignedToId: t.assignedToId,
+            priority: t.priority,
+            dueDate: t.dueDate.toISOString().split('T')[0],
+            status: t.status,
+            creator: t.creator?.name || 'Admin'
+        }));
+
+        res.json({ data: formatted, total: formatted.length });
     } catch (error) {
         res.status(500).json({ message: error.message });
     }
@@ -528,9 +565,14 @@ const updateTaskStatus = async (req, res) => {
 const updateTask = async (req, res) => {
     try {
         const { id } = req.params;
+        const data = { ...req.body };
+
+        if (data.dueDate) data.dueDate = new Date(data.dueDate);
+        if (data.assignedToId) data.assignedToId = parseInt(data.assignedToId);
+
         const updated = await prisma.task.update({
             where: { id: parseInt(id) },
-            data: req.body
+            data
         });
         res.json(updated);
     } catch (error) {
@@ -540,9 +582,24 @@ const updateTask = async (req, res) => {
 
 const createTask = async (req, res) => {
     try {
-        const newTask = await prisma.task.create({ data: req.body });
+        const { title, assignedToId, priority, dueDate, status } = req.body;
+        const { id: creatorId } = req.user;
+
+        const newTask = await prisma.task.create({
+            data: {
+                title,
+                priority: priority || 'Medium',
+                dueDate: new Date(dueDate),
+                assignedToId: parseInt(assignedToId),
+                creatorId,
+                status: status || 'Pending'
+            },
+            include: { assignedTo: true }
+        });
+
         res.status(201).json(newTask);
     } catch (error) {
+        console.error("Task Creation Error:", error);
         res.status(500).json({ message: error.message });
     }
 };
@@ -1194,6 +1251,110 @@ const updateTenantSettings = async (req, res) => {
     }
 };
 
+const getRenewalAlerts = async (req, res) => {
+    try {
+        const { tenantId } = req.user;
+        const { type, search } = req.query; // type: 'expiring' or 'expired'
+
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+
+        let where = { tenantId };
+
+        if (type === 'expiring') {
+            const sevenDaysLater = new Date(today);
+            sevenDaysLater.setDate(sevenDaysLater.getDate() + 7);
+
+            where.expiryDate = {
+                gte: today,
+                lte: sevenDaysLater
+            };
+            where.status = { not: 'Expired' };
+        } else if (type === 'expired') {
+            const fifteenDaysAgo = new Date(today);
+            fifteenDaysAgo.setDate(fifteenDaysAgo.getDate() - 15);
+
+            where.expiryDate = {
+                gte: fifteenDaysAgo,
+                lt: today
+            };
+        }
+
+        if (search) {
+            where.OR = [
+                { name: { contains: search } },
+                { phone: { contains: search } }
+            ];
+        }
+
+        const members = await prisma.member.findMany({
+            where,
+            include: {
+                plan: { select: { name: true } }
+            },
+            orderBy: { expiryDate: 'asc' }
+        });
+
+        const formatted = members.map(m => ({
+            id: m.id,
+            memberName: m.name || 'N/A',
+            phone: m.phone || 'N/A',
+            planName: m.plan?.name || 'No Plan',
+            joinDate: m.joinDate.toISOString().split('T')[0],
+            endDate: m.expiryDate ? m.expiryDate.toISOString().split('T')[0] : 'N/A',
+            status: m.status
+        }));
+
+        res.json(formatted);
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+
+const renewMembership = async (req, res) => {
+    try {
+        const { tenantId } = req.user;
+        const { memberId, planId, duration } = req.body;
+
+        const plan = await prisma.membershipPlan.findUnique({
+            where: { id: parseInt(planId) }
+        });
+
+        if (!plan) return res.status(404).json({ message: 'Plan not found' });
+
+        const today = new Date();
+        const expiryDate = new Date(today);
+        expiryDate.setMonth(expiryDate.getMonth() + parseInt(duration));
+
+        const updatedMember = await prisma.member.update({
+            where: { id: parseInt(memberId) },
+            data: {
+                planId: parseInt(planId),
+                expiryDate,
+                joinDate: today, // Reset start date for benefit cycle tracking
+                status: 'Active'
+            }
+        });
+
+        await prisma.invoice.create({
+            data: {
+                tenantId,
+                invoiceNumber: `REN-${Date.now()}`,
+                memberId: parseInt(memberId),
+                amount: parseFloat(plan.price) * parseInt(duration),
+                paymentMode: 'Cash',
+                status: 'Unpaid',
+                dueDate: new Date()
+            }
+        });
+
+        res.json({ message: 'Membership renewed successfully', member: updatedMember });
+    } catch (error) {
+        console.error("Renewal Error:", error);
+        res.status(500).json({ message: error.message });
+    }
+};
+
 module.exports = {
     getAllMembers,
     addMember,
@@ -1222,6 +1383,8 @@ module.exports = {
     getTodaysBookings,
     getBookingCalendar,
     getCheckIns,
+    getRenewalAlerts,
+    renewMembership,
     deleteCheckIn,
     getAttendanceStats,
     getLiveCheckIn,

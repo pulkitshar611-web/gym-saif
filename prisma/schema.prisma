@@ -49,10 +49,11 @@ model Tenant {
   Feedback            Feedback[]
   Attendance          Attendance[]
   LeaveRequest        LeaveRequest[]
-  TrainerAvailability TrainerAvailability[]
-  dietPlans           DietPlan[]
-  workoutPlans        WorkoutPlan[]
-  serviceRequests     ServiceRequest[]
+  trainerAvailability   TrainerAvailability[]
+  dietPlans             DietPlan[]
+  workoutPlans          WorkoutPlan[]
+  serviceRequests       ServiceRequest[]
+  amenities             Amenity[]
 
   @@map("tenant")
 }
@@ -756,4 +757,19 @@ model StoreOrderItem {
   priceAtBuy Decimal      @db.Decimal(10, 2) // Stored to prevent historical price changes from affecting past orders
 
   @@map("store_order_item")
+}
+
+model Amenity {
+  id          Int      @id @default(autoincrement())
+  tenantId    Int
+  tenant      Tenant   @relation(fields: [tenantId], references: [id])
+  name        String
+  description String?  @db.Text
+  icon        String? // Name of the icon (lucide-react)
+  status      String   @default("Active") // Active, Inactive
+  gender      String   @default("UNISEX") // MALE, FEMALE, UNISEX
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@map("amenity")
 }

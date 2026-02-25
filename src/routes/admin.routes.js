@@ -24,6 +24,8 @@ const {
     getTodaysBookings,
     getBookingCalendar,
     getCheckIns,
+    getRenewalAlerts,
+    renewMembership,
     deleteCheckIn,
     getAttendanceStats,
     getLiveCheckIn,
@@ -78,6 +80,7 @@ router.patch('/settings/tenant', authorize('SUPER_ADMIN', 'BRANCH_ADMIN', 'MANAG
 
 // Members — STAFF can view only, cannot create/edit/delete
 router.get('/members', getAllMembers);
+router.get('/members/renewal-alerts', getRenewalAlerts);
 router.post('/members', authorize('SUPER_ADMIN', 'BRANCH_ADMIN', 'MANAGER'), checkSaaSLimit('members'), addMember);
 router.get('/members/:id', getMemberById);
 router.patch('/members/:id', authorize('SUPER_ADMIN', 'BRANCH_ADMIN', 'MANAGER'), updateMember);
@@ -86,6 +89,7 @@ router.patch('/members/:id/toggle-status', authorize('SUPER_ADMIN', 'BRANCH_ADMI
 router.patch('/members/:id/freeze', authorize('SUPER_ADMIN', 'BRANCH_ADMIN', 'MANAGER'), freezeMember);
 router.patch('/members/:id/unfreeze', authorize('SUPER_ADMIN', 'BRANCH_ADMIN', 'MANAGER'), unfreezeMember);
 router.patch('/members/:id/gift', authorize('SUPER_ADMIN', 'BRANCH_ADMIN', 'MANAGER'), giftDays);
+router.post('/members/renewal/renew', authorize('SUPER_ADMIN', 'BRANCH_ADMIN', 'MANAGER'), renewMembership);
 
 // Bookings
 router.get('/bookings', getBookings);

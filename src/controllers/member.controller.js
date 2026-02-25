@@ -478,8 +478,10 @@ const getMemberProfile = async (req, res) => {
             });
         }
 
-        // Subtract used credits based on bookings
+        // Subtract used credits based on bookings since plan start
         member.bookings.forEach(b => {
+            if (new Date(b.date) < new Date(member.joinDate)) return; // Only count bookings in current cycle
+
             const className = (b.class?.name || '').toLowerCase();
             if (className.includes('sauna')) {
                 benefitWallet.saunaSessions = Math.max(0, benefitWallet.saunaSessions - 1);

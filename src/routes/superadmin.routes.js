@@ -46,6 +46,7 @@ const {
     updateProfile,
     updateTrainerRequest,
     getMemberWallets,
+    updateMemberWallet,
     updateStaffMember,
     addDevice,
     updateDevice,
@@ -65,14 +66,21 @@ router.patch('/gyms/:id', authorize('SUPER_ADMIN', 'BRANCH_ADMIN'), updateGym);
 router.delete('/gyms/:id', authorize('SUPER_ADMIN', 'BRANCH_ADMIN'), deleteGym);
 router.patch('/gyms/:id/toggle-status', authorize('SUPER_ADMIN', 'BRANCH_ADMIN'), toggleGymStatus);
 
+// Shared Admin/Manager Routes
+router.get('/wallet/stats', authorize('SUPER_ADMIN', 'BRANCH_ADMIN', 'MANAGER'), getWalletStats);
+router.get('/wallet/members', authorize('SUPER_ADMIN', 'BRANCH_ADMIN', 'MANAGER'), getMemberWallets);
+router.post('/wallet/members/:memberId/transaction', authorize('SUPER_ADMIN', 'BRANCH_ADMIN', 'MANAGER'), updateMemberWallet);
+router.get('/staff', authorize('SUPER_ADMIN', 'BRANCH_ADMIN', 'MANAGER'), getStaffMembers);
+router.post('/staff', authorize('SUPER_ADMIN', 'BRANCH_ADMIN'), addStaffMember);
+router.delete('/staff/:id', authorize('SUPER_ADMIN', 'BRANCH_ADMIN'), deleteStaffMember);
+router.patch('/staff/:id', authorize('SUPER_ADMIN', 'BRANCH_ADMIN'), updateStaffMember);
+
+
 // Restrict all other routes to SUPER_ADMIN only
 router.use(authorize('SUPER_ADMIN'));
 
 router.get('/profile', getProfile);
 router.patch('/profile', updateProfile);
-
-// Removed individual gym routes from here as they are defined above with custom auth
-
 
 router.get('/plans', getAllPlans);
 router.post('/plans', addPlan);
@@ -112,13 +120,7 @@ router.patch('/settings/invoice', updateInvoiceSettings);
 router.get('/settings/booking', getBookingSettings);
 router.patch('/settings/booking', updateBookingSettings);
 
-// Staff & Management
-router.get('/staff', getStaffMembers);
-router.post('/staff', addStaffMember);
-router.delete('/staff/:id', deleteStaffMember);
-router.patch('/staff/:id', updateStaffMember);
-router.get('/wallet/stats', getWalletStats);
-router.get('/wallet/members', getMemberWallets);
+// Requests
 router.get('/requests/trainers', getTrainerRequests);
 router.patch('/requests/trainers/:id', updateTrainerRequest);
 router.get('/requests/trainer-changes', getTrainerChangeRequests);

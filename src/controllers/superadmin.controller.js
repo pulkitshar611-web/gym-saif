@@ -815,12 +815,25 @@ const getWalletStats = async (req, res) => {
 
 const getMemberWallets = async (req, res) => {
     try {
+        const { role, tenantId } = req.user;
+        const whereClause = {};
+        if (role !== 'SUPER_ADMIN') {
+            whereClause.tenantId = tenantId;
+        }
+
         const members = await prisma.member.findMany({
+            where: whereClause,
             include: {
                 tenant: {
                     select: { name: true, branchName: true }
                 },
-                wallet: true
+                wallet: {
+                    include: {
+                        transactions: {
+                            orderBy: { createdAt: 'desc' }
+                        }
+                    }
+                }
             }
         });
 
@@ -836,20 +849,105 @@ const getMemberWallets = async (req, res) => {
         }, {});
 
         const formattedWallets = members.map(m => {
-            const wallet = m.wallet || { balance: 0 };
+            const wallet = m.wallet || { balance: 0, transactions: [] };
+            const txs = wallet.transactions || [];
+            const mappedTxs = txs.map(tx => ({
+                id: tx.id,
+                date: tx.createdAt.toISOString().split('T')[0],
+                type: tx.type,
+                amount: parseFloat(tx.amount),
+                description: tx.description
+            }));
+
             return {
                 id: m.memberId,
                 dbId: m.id,
                 name: userMap[m.userId] || `Member ${m.memberId}`,
                 branch: m.tenant?.branchName || m.tenant?.name || 'Unknown',
                 balance: parseFloat(wallet.balance || 0),
-                lastTransaction: 'N/A'
+                transactions: mappedTxs,
+                lastTransaction: txs.length > 0 ? txs[0].createdAt.toISOString().split('T')[0] : 'N/A'
             };
         });
 
         res.json(formattedWallets);
 
     } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+
+const updateMemberWallet = async (req, res) => {
+    try {
+        const { memberId } = req.params; // this is the MEM-123 string or ID
+        const { type, amount, description } = req.body;
+        const { role, tenantId } = req.user;
+
+        if (!amount || isNaN(amount) || amount <= 0) {
+            return res.status(400).json({ message: 'Valid amount is required' });
+        }
+
+        const member = await prisma.member.findUnique({
+            where: { memberId }
+        });
+
+        if (!member) return res.status(404).json({ message: 'Member not found' });
+
+        if (role !== 'SUPER_ADMIN' && member.tenantId !== tenantId) {
+            return res.status(403).json({ message: 'Unauthorized to modify this wallet' });
+        }
+
+        let wallet = await prisma.wallet.findUnique({
+            where: { memberId: member.id }
+        });
+
+        if (!wallet) {
+            wallet = await prisma.wallet.create({
+                data: {
+                    memberId: member.id,
+                    balance: 0
+                }
+            });
+        }
+
+        const numAmount = parseFloat(amount);
+        let newBalance = parseFloat(wallet.balance || 0);
+
+        if (type === 'Credit') {
+            newBalance += numAmount;
+        } else if (type === 'Debit') {
+            // Uncomment next lines if you want strict checking against deductions below zero
+            // if (newBalance < numAmount) {
+            //     return res.status(400).json({ message: 'Insufficient balance' });
+            // }
+            newBalance -= numAmount;
+        } else {
+            return res.status(400).json({ message: 'Invalid transaction type' });
+        }
+
+        // Apply Tx atomically
+        const [transaction, updatedWallet] = await prisma.$transaction([
+            prisma.transaction.create({
+                data: {
+                    walletId: wallet.id,
+                    amount: numAmount,
+                    type,
+                    description: description || `${type} by ${req.user.name || 'Admin'}`
+                }
+            }),
+            prisma.wallet.update({
+                where: { id: wallet.id },
+                data: { balance: newBalance }
+            })
+        ]);
+
+        res.json({
+            transaction,
+            balance: updatedWallet.balance
+        });
+
+    } catch (error) {
+        console.error("Wallet Update Error:", error);
         res.status(500).json({ message: error.message });
     }
 };
@@ -1030,6 +1128,7 @@ module.exports = {
     updateProfile,
     updateTrainerRequest,
     getMemberWallets,
+    updateMemberWallet,
     updateStaffMember,
     addDevice,
     updateDevice,

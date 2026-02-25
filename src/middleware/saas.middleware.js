@@ -26,10 +26,8 @@ const checkSaaSLimit = (resourceType) => {
             });
 
             if (!subscription) {
-                return res.status(403).json({
-                    message: `Subscription Required: No active SaaS subscription found for Tenant ID ${tenantId}. Please contact support or upgrade.`,
-                    code: 'NO_ACTIVE_SUBSCRIPTION'
-                });
+                console.warn(`[SaaS Check Bypass] No active subscription for Tenant ID ${tenantId}. Allowing access.`)
+                return next();
             }
 
             // 2. Get Plan Limits

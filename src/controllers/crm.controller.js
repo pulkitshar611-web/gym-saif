@@ -108,12 +108,48 @@ const updateLeadStatus = async (req, res) => {
         const { id } = req.params;
         const { status } = req.body;
 
-        const lead = await prisma.lead.update({
+        const lead = await prisma.lead.findUnique({ where: { id: parseInt(id) } });
+        if (!lead) return res.status(404).json({ message: 'Lead not found' });
+
+        if (status === 'Converted' && lead.status !== 'Converted') {
+            const bcrypt = require('bcryptjs');
+            const hashedPassword = await bcrypt.hash('123456', 10);
+            const userEmail = lead.email || `member${Date.now()}@empty.com`;
+
+            // Create user
+            const newUser = await prisma.user.create({
+                data: {
+                    name: lead.name,
+                    email: userEmail,
+                    password: hashedPassword,
+                    phone: lead.phone,
+                    role: 'MEMBER',
+                    tenantId: lead.tenantId,
+                    status: 'Active'
+                }
+            });
+
+            // Create Member profile
+            await prisma.member.create({
+                data: {
+                    userId: newUser.id,
+                    tenantId: lead.tenantId,
+                    memberId: `MEM-${Date.now()}`,
+                    name: lead.name,
+                    email: userEmail,
+                    phone: lead.phone,
+                    status: 'Active',
+                    joinDate: new Date()
+                }
+            });
+        }
+
+        const updatedLead = await prisma.lead.update({
             where: { id: parseInt(id) },
             data: { status }
         });
 
-        res.json(lead);
+        res.json(updatedLead);
     } catch (error) {
         res.status(500).json({ message: error.message });
     }

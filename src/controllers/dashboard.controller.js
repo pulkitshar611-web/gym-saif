@@ -520,14 +520,21 @@ exports.getMemberDashboard = async (req, res) => {
                     const name = (b.name || "").toLowerCase();
                     let used = 0;
                     if (name.includes('sauna')) {
-                        used = member.bookings.filter(bk => (bk.class?.name || "").toLowerCase().includes('sauna')).length;
+                        used = member.bookings.filter(bk =>
+                            (bk.class?.name || "").toLowerCase().includes('sauna') &&
+                            new Date(bk.date) >= new Date(member.joinDate)
+                        ).length;
                     } else if (name.includes('ice bath')) {
-                        used = member.bookings.filter(bk => (bk.class?.name || "").toLowerCase().includes('ice bath')).length;
+                        used = member.bookings.filter(bk =>
+                            (bk.class?.name || "").toLowerCase().includes('ice bath') &&
+                            new Date(bk.date) >= new Date(member.joinDate)
+                        ).length;
                     } else if (name.includes('pt') || name.includes('class')) {
                         // Count other bookings as class credits
                         used = member.bookings.filter(bk => {
                             const cn = (bk.class?.name || "").toLowerCase();
-                            return !cn.includes('sauna') && !cn.includes('ice bath');
+                            const isCoreClass = !cn.includes('sauna') && !cn.includes('ice bath');
+                            return isCoreClass && new Date(bk.date) >= new Date(member.joinDate);
                         }).length;
                     }
 
