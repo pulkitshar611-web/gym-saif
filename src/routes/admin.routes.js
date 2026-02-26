@@ -52,11 +52,13 @@ const {
     getChats,
     getMessages,
     sendMessage,
+    getChatUsers,
     createPayroll,
     getPayrollHistory,
     updatePayrollStatus,
     getProfile,
     updateProfile,
+    changePassword,
     getLeaveRequests,
     updateLeaveStatus,
     getTenantSettings,
@@ -153,6 +155,7 @@ router.post('/communication/announcements', createAnnouncement);
 router.get('/communication/chats', getChats);
 router.get('/communication/chats/:id/messages', getMessages);
 router.post('/communication/chats/:id/send', sendMessage);
+router.get('/communication/chat-users', getChatUsers);
 
 // Payroll
 router.get('/payroll/staff', getAllStaff);
@@ -163,5 +166,6 @@ router.patch('/payroll/:id/status', updatePayrollStatus);
 // Profile
 router.get('/profile', getProfile);
 router.patch('/profile', updateProfile);
+router.post('/change-password', changePassword);
 
 module.exports = router;

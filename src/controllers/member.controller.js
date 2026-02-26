@@ -238,12 +238,27 @@ const payInvoice = async (req, res) => {
         const member = memberRaw[0];
         if (!member) return res.status(404).json({ message: 'Member profile not found' });
 
-        await prisma.invoice.updateMany({
-            where: { id: parseInt(id), memberId: member.id, tenantId: member.tenantId },
+        const updatedInvoice = await prisma.invoice.update({
+            where: { id: parseInt(id) },
             data: { status: 'Paid', paidDate: new Date() }
         });
 
-        res.json({ message: 'Invoice paid successfully' });
+        // End-to-End Integration: Fetch and use Payment Success template
+        const settings = await prisma.tenantSettings.findUnique({ where: { tenantId: member.tenantId } });
+        const templates = settings?.messageTemplates || [];
+        const template = templates.find(t => t.name === 'Payment Success' || t.id === 2);
+
+        if (template) {
+            const message = template.text
+                .replace('{{name}}', member.name)
+                .replace('{{amount}}', updatedInvoice.amount)
+                .replace('{{month}}', new Date().toLocaleString('default', { month: 'long' }));
+
+            console.log(`[COMMUNICATION SERVICE] Sending ${template.type} to ${member.name}: ${message}`);
+            // In production, this would call an Email/WhatsApp API
+        }
+
+        res.json({ message: 'Invoice paid successfully', invoiceNumber: updatedInvoice.invoiceNumber });
     } catch (error) {
         res.status(500).json({ message: error.message });
     }

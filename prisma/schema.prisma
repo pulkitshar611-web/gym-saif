@@ -25,6 +25,7 @@ model Tenant {
   name       String
   branchName String?
   owner      String?
+  email      String?
   phone      String?
   location   String?
   status     String   @default("Active") // Active, Suspended
@@ -42,6 +43,7 @@ model Tenant {
   invoices            Invoice[]
   expenses            Expense[]
   payroll             Payroll[]
+  devices             Device[]
   settings            TenantSettings?
   Announcement        Announcement[]
   Reward              Reward[]
@@ -54,6 +56,7 @@ model Tenant {
   workoutPlans          WorkoutPlan[]
   serviceRequests       ServiceRequest[]
   amenities             Amenity[]
+  promoCodes            PromoCode[]
 
   @@map("tenant")
 }
@@ -206,13 +209,14 @@ model SaasPayment {
 
 model Device {
   id           Int      @id @default(autoincrement())
+  tenantId     Int?
+  tenant       Tenant?  @relation(fields: [tenantId], references: [id])
   name         String
   type         String
   ipAddress    String? // Optional IP address
   status       String   @default("connected") // connected, error, disconnected
   entriesToday Int      @default(0) // Tracks entries
   message      String?
-  tenantId     Int? // Can be global or tenant-specific
   lastSeen     DateTime @default(now())
 
   @@map("device")
@@ -592,6 +596,11 @@ model TenantSettings {
   
   // Payment Gateways & APIs
   apiKeys            Json? // { razorpay: { key: '', secret: '' }, sms: '', whatsapp: '' }
+
+  // Invoice Settings
+  invoicePrefix      String  @default("INV-")
+  invoiceStartNumber Int     @default(1001)
+  gstPercent         Decimal @default(18.00) @db.Decimal(5, 2)
   
   // Message Templates
   messageTemplates Json? // Array of { id, name, content, trigger }
@@ -772,4 +781,21 @@ model Amenity {
   updatedAt   DateTime @updatedAt
 
   @@map("amenity")
+}
+
+model PromoCode {
+  id          Int       @id @default(autoincrement())
+  tenantId    Int       @default(1)
+  tenant      Tenant    @relation(fields: [tenantId], references: [id])
+  code        String    @unique
+  type        String    @default("PERCENTAGE") // PERCENTAGE, FLAT
+  value       Decimal   @db.Decimal(10, 2)
+  status      String    @default("Active") // Active, Inactive
+  expiryDate  DateTime?
+  usageLimit  Int?
+  usedCount   Int       @default(0)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@map("promo_code")
 }

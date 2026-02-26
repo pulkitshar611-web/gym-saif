@@ -574,12 +574,18 @@ const getAttendanceReport = async (req, res) => {
 
         if (type && type !== 'All') {
             where.user = where.user || {};
-            where.user.role = type.toUpperCase();
+            if (type === 'Staff') {
+                where.user.role = { in: ['STAFF', 'TRAINER', 'MANAGER'] };
+            } else if (type === 'Member' || type === 'MEMBER') {
+                where.user.role = 'MEMBER';
+            } else {
+                where.user.role = type.toUpperCase();
+            }
         }
 
         if (search) {
             where.user = where.user || {};
-            where.user.name = { contains: search };
+            where.user.name = { contains: search, mode: 'insensitive' };
         }
 
         const [attendance, total] = await Promise.all([
@@ -698,39 +704,51 @@ const getBookingReport = async (req, res) => {
 // Get Live Access Control — today's check-ins with membership/dues status
 const getLiveAccess = async (req, res) => {
     try {
-        const tenantId = req.user.tenantId;
+        const { tenantId, role } = req.user;
         const startOfDay = new Date(); startOfDay.setHours(0, 0, 0, 0);
         const endOfDay = new Date(); endOfDay.setHours(23, 59, 59, 999);
 
-        // Fetch today's attendance records for this tenant
+        const where = role === 'SUPER_ADMIN' ? {} : { user: { tenantId } };
+
+        // Fetch today's attendance records
         const records = await prisma.attendance.findMany({
-            where: { tenantId, date: { gte: startOfDay, lte: endOfDay } },
-            include: { user: { select: { id: true, name: true, role: true } } },
+            where: { ...where, checkIn: { gte: startOfDay, lte: endOfDay } },
+            include: { user: { select: { id: true, name: true, role: true, avatar: true } } },
             orderBy: { checkIn: 'desc' },
             take: 50
         });
 
-        const checkins = await Promise.all(records.map(async (r) => {
-            // Try to find member record to get expiry + dues
-            const member = await prisma.member.findFirst({
-                where: { userId: r.userId, tenantId },
-                include: { plan: { select: { name: true } } }
-            });
+        // Optimization: Fetch all needed members in one go
+        const userIds = records.map(r => r.userId);
+        const members = await prisma.member.findMany({
+            where: { userId: { in: userIds }, user: { tenantId } },
+            include: { plan: true }
+        });
 
-            // Get outstanding dues (unpaid invoices)
-            const dues = await prisma.invoice.aggregate({
-                where: { memberId: member?.id, status: { in: ['Unpaid', 'Partial'] } },
-                _sum: { amount: true }
-            });
+        const checkins = await Promise.all(records.map(async (r) => {
+            const memberData = members.find(m => m.userId === r.userId);
+
+            // Get outstanding dues
+            let duesAmount = 0;
+            if (memberData) {
+                const dues = await prisma.invoice.aggregate({
+                    where: { memberId: memberData.id, status: { in: ['Unpaid', 'Partial'] } },
+                    _sum: { amount: true }
+                });
+                duesAmount = parseFloat(dues._sum.amount || 0);
+            }
 
             return {
                 id: r.id,
                 member: r.user?.name || 'Unknown',
-                plan: member?.plan?.name || r.user?.role || 'Staff',
-                time: r.checkIn ? r.checkIn.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '-',
-                expiry: member?.expiryDate ? member.expiryDate.toISOString().split('T')[0] : null,
-                balance: parseFloat(dues._sum.amount || 0),
-                photo: `https://ui-avatars.com/api/?name=${encodeURIComponent(r.user?.name || 'U')}&background=6d28d9&color=fff&size=48`
+                name: r.user?.name || 'Unknown',
+                type: r.type,
+                plan: memberData?.plan?.name || (r.type === 'Member' ? 'Standard' : r.type),
+                time: r.checkIn ? new Date(r.checkIn).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '-',
+                expiry: memberData?.expiryDate ? memberData.expiryDate.toISOString().split('T')[0] : null,
+                balance: duesAmount,
+                photo: r.user?.avatar || `https://ui-avatars.com/api/?name=${encodeURIComponent(r.user?.name || 'U')}&background=6d28d9&color=fff&size=48`,
+                status: r.checkOut ? 'Checked Out' : 'checked-in'
             };
         }));
 

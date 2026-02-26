@@ -75,6 +75,12 @@ router.post('/staff', authorize('SUPER_ADMIN', 'BRANCH_ADMIN'), addStaffMember);
 router.delete('/staff/:id', authorize('SUPER_ADMIN', 'BRANCH_ADMIN'), deleteStaffMember);
 router.patch('/staff/:id', authorize('SUPER_ADMIN', 'BRANCH_ADMIN'), updateStaffMember);
 
+// Devices
+router.get('/devices', authorize('SUPER_ADMIN', 'BRANCH_ADMIN', 'MANAGER'), getDevices);
+router.post('/devices', authorize('SUPER_ADMIN', 'BRANCH_ADMIN'), addDevice);
+router.patch('/devices/:id', authorize('SUPER_ADMIN', 'BRANCH_ADMIN'), updateDevice);
+router.delete('/devices/:id', authorize('SUPER_ADMIN', 'BRANCH_ADMIN'), deleteDevice);
+
 
 // Restrict all other routes to SUPER_ADMIN only
 router.use(authorize('SUPER_ADMIN'));
@@ -108,11 +114,7 @@ router.get('/logs/error', getErrorLogs);
 router.get('/logs/hardware', getHardwareLogs);
 router.get('/reports/gst', getGSTReports);
 
-// Devices & Settings
-router.get('/devices', getDevices);
-router.post('/devices', addDevice);
-router.patch('/devices/:id', updateDevice);
-router.delete('/devices/:id', deleteDevice);
+// Settings
 router.get('/settings/global', getGlobalSettings);
 router.patch('/settings/global', updateGlobalSettings);
 router.get('/settings/invoice', getInvoiceSettings);

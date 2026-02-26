@@ -1,5 +1,6 @@
 // gym_backend/src/controllers/admin.controller.js
 const prisma = require('../config/prisma');
+const bcrypt = require('bcryptjs');
 
 // --- MEMBER MANAGEMENT ---
 
@@ -456,13 +457,80 @@ const getBookingCalendar = async (req, res) => {
 const getCheckIns = async (req, res) => {
     try {
         const { tenantId, role } = req.user;
+        const { type, search, date, page = 1, limit = 50 } = req.query;
+
         const where = role === 'SUPER_ADMIN' ? {} : { user: { tenantId } };
-        const attendance = await prisma.attendance.findMany({
-            where,
-            include: { user: true }
+
+        if (type && type !== 'All') {
+            if (type === 'Staff') {
+                where.user = { ...where.user, role: { in: ['STAFF', 'TRAINER', 'MANAGER'] } };
+            } else if (type === 'Member' || type === 'MEMBER') {
+                where.user = { ...where.user, role: 'MEMBER' };
+            } else {
+                where.type = type;
+            }
+        }
+
+        if (date) {
+            const startOfDay = new Date(date);
+            startOfDay.setHours(0, 0, 0, 0);
+            const endOfDay = new Date(date);
+            endOfDay.setHours(23, 59, 59, 999);
+            where.checkIn = { gte: startOfDay, lte: endOfDay };
+        }
+
+        if (search) {
+            where.user = {
+                ...where.user,
+                name: { contains: search, mode: 'insensitive' }
+            };
+        }
+
+        const [attendance, total] = await Promise.all([
+            prisma.attendance.findMany({
+                where,
+                include: {
+                    user: {
+                        include: {
+                            // If we want plan details, we need to fetch them. 
+                            // Since Member is not directly related in Prisma schema snippet I saw,
+                            // we'll handle it in the mapping if needed or fetch members separately.
+                        }
+                    }
+                },
+                orderBy: { checkIn: 'desc' },
+                skip: (parseInt(page) - 1) * parseInt(limit),
+                take: parseInt(limit)
+            }),
+            prisma.attendance.count({ where })
+        ]);
+
+        // Fetch member details for those records that are members to get Plan name
+        const memberUserIds = attendance.filter(a => a.type === 'Member').map(a => a.userId);
+        const members = await prisma.member.findMany({
+            where: { userId: { in: memberUserIds }, tenantId },
+            include: { plan: true }
         });
-        res.json({ data: attendance, total: attendance.length });
+
+        const mapped = attendance.map(a => {
+            const memberData = a.type === 'Member' ? members.find(m => m.userId === a.userId) : null;
+            return {
+                ...a,
+                name: a.user?.name || 'Unknown',
+                membershipId: memberData?.memberId || '-',
+                plan: memberData?.plan?.name || (a.type === 'Member' ? 'Standard' : '-'),
+                role: a.user?.role || a.type,
+                time: a.checkIn ? new Date(a.checkIn).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '-',
+                checkOut: a.checkOut ? new Date(a.checkOut).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '-',
+                status: a.checkOut ? 'Checked Out' : 'checked-in',
+                avatar: a.user?.avatar,
+                photo: a.user?.avatar || `https://ui-avatars.com/api/?name=${encodeURIComponent(a.user?.name || 'U')}&background=6d28d9&color=fff&size=48`
+            };
+        });
+
+        res.json({ data: mapped, total });
     } catch (error) {
+        console.error("getCheckIns Error:", error);
         res.status(500).json({ message: error.message });
     }
 };
@@ -481,10 +549,26 @@ const getAttendanceStats = async (req, res) => {
     try {
         const { tenantId, role } = req.user;
         const where = role === 'SUPER_ADMIN' ? {} : { user: { tenantId } };
-        const currentlyIn = await prisma.attendance.count({
-            where: { ...where, checkOut: null }
-        });
-        res.json({ currentlyIn, totalToday: 0, membersToday: 0, staffToday: 0 });
+
+        const startOfDay = new Date();
+        startOfDay.setHours(0, 0, 0, 0);
+
+        const [currentlyIn, totalToday, membersToday, staffToday] = await Promise.all([
+            prisma.attendance.count({
+                where: { ...where, checkOut: null }
+            }),
+            prisma.attendance.count({
+                where: { ...where, checkIn: { gte: startOfDay } }
+            }),
+            prisma.attendance.count({
+                where: { ...where, user: { ...where.user, role: 'MEMBER' }, checkIn: { gte: startOfDay } }
+            }),
+            prisma.attendance.count({
+                where: { ...where, user: { ...where.user, role: { in: ['STAFF', 'TRAINER', 'MANAGER'] } }, checkIn: { gte: startOfDay } }
+            })
+        ]);
+
+        res.json({ currentlyIn, totalToday, membersToday, staffToday });
     } catch (error) {
         res.status(500).json({ message: error.message });
     }
@@ -493,13 +577,51 @@ const getAttendanceStats = async (req, res) => {
 const getLiveCheckIn = async (req, res) => {
     try {
         const { tenantId, role } = req.user;
-        const where = role === 'SUPER_ADMIN' ? {} : { user: { tenantId } };
+        const where = role === 'SUPER_ADMIN' ? { checkOut: null } : { user: { tenantId }, checkOut: null };
+
         const live = await prisma.attendance.findMany({
-            where: { ...where, checkOut: null },
-            include: { user: true }
+            where,
+            include: { user: true },
+            orderBy: { checkIn: 'desc' }
         });
-        res.json(live);
+
+        // Fetch member details for those records that are members to get Plan name, dues etc.
+        const memberUserIds = live.filter(a => a.type === 'Member').map(a => a.userId);
+        const members = await prisma.member.findMany({
+            where: { userId: { in: memberUserIds }, user: { tenantId } },
+            include: { plan: true }
+        });
+
+        const mapped = await Promise.all(live.map(async a => {
+            const memberData = a.type === 'Member' ? members.find(m => m.userId === a.userId) : null;
+
+            // For dues, we need to sum unpaid invoices for this member
+            let duesAmount = 0;
+            if (memberData) {
+                const dues = await prisma.invoice.aggregate({
+                    where: { memberId: memberData.id, status: { in: ['Unpaid', 'Partial'] } },
+                    _sum: { amount: true }
+                });
+                duesAmount = parseFloat(dues._sum.amount || 0);
+            }
+
+            return {
+                id: a.id,
+                member: a.user?.name || 'Unknown',
+                name: a.user?.name || 'Unknown', // Support both field names
+                type: a.type,
+                plan: memberData?.plan?.name || (a.type === 'Member' ? 'Standard' : a.type),
+                time: a.checkIn ? new Date(a.checkIn).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '-',
+                expiry: memberData?.expiryDate ? memberData.expiryDate.toISOString().split('T')[0] : null,
+                balance: duesAmount,
+                photo: a.user?.avatar || `https://ui-avatars.com/api/?name=${encodeURIComponent(a.user?.name || 'U')}&background=6d28d9&color=fff&size=48`,
+                status: a.checkOut ? 'Checked Out' : 'checked-in'
+            };
+        }));
+
+        res.json(mapped);
     } catch (error) {
+        console.error("getLiveCheckIn Error:", error);
         res.status(500).json({ message: error.message });
     }
 };
@@ -1018,6 +1140,37 @@ const sendMessage = async (req, res) => {
     }
 };
 
+const getChatUsers = async (req, res) => {
+    try {
+        const { tenantId, id: currentUserId } = req.user;
+
+        const users = await prisma.user.findMany({
+            where: {
+                OR: [
+                    { role: 'SUPER_ADMIN' },
+                    {
+                        tenantId: tenantId,
+                        role: { in: ['BRANCH_ADMIN', 'MANAGER', 'STAFF', 'TRAINER'] },
+                        id: { not: currentUserId }
+                    }
+                ],
+                status: 'Active'
+            },
+            select: {
+                id: true,
+                name: true,
+                role: true,
+                avatar: true,
+                phone: true
+            }
+        });
+
+        res.json(users);
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+
 const createPayroll = async (req, res) => {
     try {
         const { tenantId } = req.user;
@@ -1163,6 +1316,29 @@ const updateProfile = async (req, res) => {
     }
 };
 
+const changePassword = async (req, res) => {
+    try {
+        const { currentPassword, newPassword } = req.body;
+        const user = await prisma.user.findUnique({
+            where: { id: req.user.id }
+        });
+
+        if (!user || !(await bcrypt.compare(currentPassword, user.password))) {
+            return res.status(401).json({ message: 'Invalid current password' });
+        }
+
+        const hashedPassword = await bcrypt.hash(newPassword, 10);
+        await prisma.user.update({
+            where: { id: req.user.id },
+            data: { password: hashedPassword }
+        });
+
+        res.json({ success: true, message: 'Password changed successfully' });
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+
 // --- LEAVE MANAGEMENT ---
 const getLeaveRequests = async (req, res) => {
     try {
@@ -1222,17 +1398,29 @@ const updateLeaveStatus = async (req, res) => {
 const getTenantSettings = async (req, res) => {
     try {
         const { tenantId } = req.user;
-        let settings = await prisma.tenantSettings.findUnique({
-            where: { tenantId }
+        const tenant = await prisma.tenant.findUnique({
+            where: { id: tenantId },
+            include: { settings: true }
         });
 
+        if (!tenant) {
+            return res.status(404).json({ message: 'Branch not found' });
+        }
+
+        let settings = tenant.settings;
         if (!settings) {
             settings = await prisma.tenantSettings.create({
                 data: { tenantId }
             });
         }
 
-        res.json(settings);
+        res.json({
+            siteName: tenant.name || '',
+            contactAddress: tenant.location || '',
+            contactPhone: tenant.phone || '',
+            supportEmail: tenant.email || '',
+            ...settings
+        });
     } catch (error) {
         res.status(500).json({ message: error.message });
     }
@@ -1241,11 +1429,32 @@ const getTenantSettings = async (req, res) => {
 const updateTenantSettings = async (req, res) => {
     try {
         const { tenantId } = req.user;
-        const updated = await prisma.tenantSettings.update({
-            where: { tenantId },
-            data: req.body
+        const { siteName, contactAddress, contactPhone, supportEmail, ...otherSettings } = req.body;
+
+        // Update Tenant Table
+        const updatedTenant = await prisma.tenant.update({
+            where: { id: tenantId },
+            data: {
+                name: siteName,
+                location: contactAddress,
+                phone: contactPhone,
+                email: supportEmail
+            }
         });
-        res.json(updated);
+
+        // Update TenantSettings Table
+        const updatedSettings = await prisma.tenantSettings.update({
+            where: { tenantId },
+            data: otherSettings
+        });
+
+        res.json({
+            siteName: updatedTenant.name,
+            contactAddress: updatedTenant.location,
+            contactPhone: updatedTenant.phone,
+            supportEmail: updatedTenant.email,
+            ...updatedSettings
+        });
     } catch (error) {
         res.status(500).json({ message: error.message });
     }
@@ -1407,11 +1616,13 @@ module.exports = {
     getChats,
     getMessages,
     sendMessage,
+    getChatUsers,
     createPayroll,
     getPayrollHistory,
     updatePayrollStatus,
     getProfile,
     updateProfile,
+    changePassword,
     getLeaveRequests,
     updateLeaveStatus,
     getTenantSettings,

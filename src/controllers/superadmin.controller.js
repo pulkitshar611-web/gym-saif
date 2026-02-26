@@ -509,7 +509,12 @@ const getGSTReports = async (req, res) => {
 
 const getDevices = async (req, res) => {
     try {
-        const devices = await prisma.device.findMany();
+        const { role, tenantId } = req.user;
+        const where = {};
+        if (role !== 'SUPER_ADMIN') {
+            where.tenantId = tenantId;
+        }
+        const devices = await prisma.device.findMany({ where });
         res.json(devices);
     } catch (error) {
         res.status(500).json({ message: error.message });
@@ -519,12 +524,15 @@ const getDevices = async (req, res) => {
 const addDevice = async (req, res) => {
     try {
         const { name, type, ip, status } = req.body;
+        const tenantId = req.user.role === 'SUPER_ADMIN' ? (req.body.tenantId || null) : req.user.tenantId;
+
         const newDevice = await prisma.device.create({
             data: {
                 name,
                 type,
                 ipAddress: ip,
-                status
+                status,
+                tenantId: tenantId ? parseInt(tenantId) : null
             }
         });
         res.status(201).json(newDevice);
@@ -537,6 +545,15 @@ const updateDevice = async (req, res) => {
     try {
         const { id } = req.params;
         const { name, type, ip, status } = req.body;
+        const { role, tenantId } = req.user;
+
+        const device = await prisma.device.findUnique({ where: { id: parseInt(id) } });
+        if (!device) return res.status(404).json({ message: 'Device not found' });
+
+        if (role !== 'SUPER_ADMIN' && device.tenantId !== tenantId) {
+            return res.status(403).json({ message: 'Unauthorized to update this device' });
+        }
+
         const updatedDevice = await prisma.device.update({
             where: { id: parseInt(id) },
             data: {
@@ -555,6 +572,15 @@ const updateDevice = async (req, res) => {
 const deleteDevice = async (req, res) => {
     try {
         const { id } = req.params;
+        const { role, tenantId } = req.user;
+
+        const device = await prisma.device.findUnique({ where: { id: parseInt(id) } });
+        if (!device) return res.status(404).json({ message: 'Device not found' });
+
+        if (role !== 'SUPER_ADMIN' && device.tenantId !== tenantId) {
+            return res.status(403).json({ message: 'Unauthorized to delete this device' });
+        }
+
         await prisma.device.delete({ where: { id: parseInt(id) } });
         res.json({ message: 'Device deleted successfully' });
     } catch (error) {

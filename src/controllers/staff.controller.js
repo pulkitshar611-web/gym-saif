@@ -174,9 +174,11 @@ const checkIn = async (req, res) => {
 
         const attendance = await prisma.attendance.create({
             data: {
-                userId: member.userId || req.user.id, // Fallback safely
+                userId: member.userId || req.user.id,
+                tenantId: member.tenantId || req.user.tenantId,
                 type: 'Member',
                 checkIn: new Date(),
+                date: new Date() // Explicitly setting date field
             }
         });
 

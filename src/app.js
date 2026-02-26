@@ -62,9 +62,11 @@ app.use('/api/v1/dashboard', dashboardRoutes);
 
 const storeRoutes = require('./routes/store.routes');
 const amenityRoutes = require('./routes/amenity.routes');
+const promoRoutes = require('./routes/promo.routes');
 
 app.use('/api/v1/store', storeRoutes);
 app.use('/api/v1/amenities', amenityRoutes);
+app.use('/api/v1/promos', promoRoutes);
 
 // Base Route
 app.get('/', (req, res) => {
