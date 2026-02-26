@@ -1286,12 +1286,15 @@ const sendMessage = async (req, res) => {
         let conversationId = (routeId !== 'new' && routeId !== 'undefined' && routeId) ? routeId : bodyId;
 
         if (!conversationId && receiverId) {
-            // Find or create conversation
+            const partnerId = parseInt(receiverId);
+            // Find or create conversation - stricter 2-person p2p search
             const existingConv = await prisma.conversation.findFirst({
                 where: {
-                    participants: {
-                        every: { id: { in: [userId, parseInt(receiverId)] } }
-                    }
+                    AND: [
+                        { participants: { some: { id: userId } } },
+                        { participants: { some: { id: partnerId } } },
+                        { participants: { every: { id: { in: [userId, partnerId] } } } }
+                    ]
                 }
             });
 
@@ -1336,6 +1339,7 @@ const sendMessage = async (req, res) => {
 
         const targetId = receiver.participants[0]?.id;
         if (targetId) {
+            console.log(`[CHAT] Sending real-time message to User ${targetId} via room ${targetId}`);
             io.to(targetId.toString()).emit('new_message', {
                 id: message.id,
                 conversationId,
@@ -1344,6 +1348,8 @@ const sendMessage = async (req, res) => {
                 time: message.createdAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
                 sentBy: 'member' // In receiver's perspective, it's 'them'
             });
+        } else {
+            console.warn(`[CHAT] No receiver found for conversation ${conversationId}`);
         }
 
         res.json({ success: true, message: 'Message sent', data: message });
