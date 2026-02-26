@@ -453,10 +453,10 @@ exports.getTrainerDashboard = async (req, res) => {
 
         const user = await prisma.user.findUnique({ where: { id: trainerId } });
         const baseSalary = user?.baseSalary ? Number(user.baseSalary) : 20000;
-
         const totalEarnings = currentPayroll ? Number(currentPayroll.amount) : baseSalary;
         const incentives = currentPayroll ? Number(currentPayroll.incentives) : 0;
         const deductions = currentPayroll ? Number(currentPayroll.deductions) : 0;
+        const target = (user?.config && typeof user.config === 'object' && user.config.earningsTarget) ? Number(user.config.earningsTarget) : 60000;
 
         const announcements = await prisma.announcement.findMany({
             where: {
@@ -506,7 +506,7 @@ exports.getTrainerDashboard = async (req, res) => {
                 totalEarnings: totalEarnings,
                 commission: incentives,
                 salary: totalEarnings - incentives + deductions,
-                target: 60000,
+                target: target,
                 pendingPayouts: totalEarnings
             },
             announcements: announcements.map(a => ({

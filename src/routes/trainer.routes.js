@@ -35,7 +35,10 @@ const {
     createWorkoutPlan,
     updateWorkoutPlan,
     toggleWorkoutPlanStatus,
-    assignPlanToMember
+    deleteWorkoutPlan,
+    assignPlanToMember,
+    getMemberMessages,
+    sendMemberMessage
 } = require('../controllers/trainer.controller');
 const { getMemberProgressById } = require('../controllers/progress.controller');
 const { protect, authorize } = require('../middleware/auth.middleware');
@@ -57,6 +60,8 @@ router.patch('/members/:id/flag', flagMember);
 router.get('/members/:id/payments', getMemberPayments);
 router.get('/members/:id/progress', getMemberProgressById);
 router.post('/members/:id/assign-plan', assignPlanToMember);
+router.get('/members/:id/messages', getMemberMessages);
+router.post('/members/:id/messages', sendMemberMessage);
 
 // Sessions
 router.get('/sessions', getSessions);
@@ -100,5 +105,6 @@ router.get('/workout-plans', getWorkoutPlans);
 router.post('/workout-plans', createWorkoutPlan);
 router.patch('/workout-plans/:id', updateWorkoutPlan);
 router.patch('/workout-plans/:id/status', toggleWorkoutPlanStatus);
+router.delete('/workout-plans/:id', deleteWorkoutPlan);
 
 module.exports = router;

@@ -21,6 +21,7 @@ const getProfile = async (req, res) => {
             role: user.role,
             avatar: user.avatar,
             status: user.status,
+            config: user.config || {},
             joinedDate: new Date(user.joinedDate).toLocaleDateString('en-US', {
                 month: 'short',
                 day: 'numeric',
@@ -34,7 +35,7 @@ const getProfile = async (req, res) => {
 
 const updateProfile = async (req, res) => {
     try {
-        const { name, email, phone, address, avatar } = req.body;
+        const { name, email, phone, address, avatar, config } = req.body;
 
         let avatarUrl = avatar;
         if (avatar && avatar.startsWith('data:image')) {
@@ -51,7 +52,8 @@ const updateProfile = async (req, res) => {
                 email,
                 phone,
                 address,
-                avatar: avatarUrl
+                avatar: avatarUrl,
+                config: config || undefined
             }
         });
 
@@ -64,6 +66,7 @@ const updateProfile = async (req, res) => {
             role: user.role,
             avatar: user.avatar,
             status: user.status,
+            config: user.config || {},
             joinedDate: new Date(user.joinedDate).toLocaleDateString('en-US', {
                 month: 'short',
                 day: 'numeric',
@@ -102,7 +105,7 @@ const getAssignedMembers = async (req, res) => {
     try {
         const members = await prisma.member.findMany({
             where: { trainerId: req.user.id, tenantId: req.user.tenantId },
-            include: { plan: true, bookings: true, progress: { orderBy: { date: 'desc' }, take: 1 } }
+            include: { plan: true, bookings: true, progress: { orderBy: { date: 'desc' }, take: 1 }, dietPlans: { orderBy: { createdAt: 'desc' }, take: 1 }, workoutPlans: { orderBy: { createdAt: 'desc' }, take: 1 } }
         });
 
         // The frontend expects specific data maps (attendance, sessionsDone). 
@@ -112,6 +115,8 @@ const getAssignedMembers = async (req, res) => {
             memberId: m.memberId,
             name: m.name,
             plan: m.plan?.name || 'N/A',
+            activeDietPlan: m.dietPlans?.[0] || null,
+            activeWorkoutPlan: m.workoutPlans?.[0] || null,
             status: m.status,
             attendance: 'N/A', // Real impl requires attendance joins
             lastSession: 'N/A', // Setup based on bookings later
@@ -120,7 +125,8 @@ const getAssignedMembers = async (req, res) => {
             email: m.email,
             phone: m.phone,
             goal: m.fitnessGoal || 'General Fitness',
-            isFlagged: false, // Feature config
+            isFlagged: m.isFlagged,
+            flagReason: m.flagReason,
             recentWorkouts: [
                 { date: '2024-05-10', time: '09:00 AM', status: 'Present', type: 'Weights' },
                 { date: '2024-05-08', time: '08:30 AM', status: 'Present', type: 'Cardio' }
@@ -138,32 +144,61 @@ const getMemberById = async (req, res) => {
         const { id } = req.params;
         const member = await prisma.member.findUnique({
             where: { id: parseInt(id) },
-            include: { plan: true }
+            include: {
+                plan: true,
+                dietPlans: { orderBy: { createdAt: 'desc' }, take: 5 },
+                workoutPlans: { orderBy: { createdAt: 'desc' }, take: 5 },
+                bookings: {
+                    include: { class: true },
+                    orderBy: { date: 'desc' }
+                }
+            }
         });
         if (!member || member.trainerId !== req.user.id) {
             return res.status(403).json({ message: 'Unauthorized or not found' });
         }
 
+        const completedBookings = member.bookings.filter(b => b.status === 'Completed' || b.status === 'Attended');
+        const attendance = member.bookings.length ? Math.round((completedBookings.length / member.bookings.length) * 100) : 0;
+        const sessionsDone = completedBookings.length;
+        const totalSessions = member.bookings.length;
+
+        const recentWorkouts = member.bookings.map(b => ({
+            id: b.id,
+            name: b.class?.name || 'Session',
+            date: new Date(b.date).toLocaleDateString() + ' ' + new Date(b.date).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+            duration: b.class?.duration || '1h',
+            status: b.status,
+            calories: 450 // dynamic fallback not available in class schema
+        }));
+
         const mapped = {
             id: member.id,
             memberId: member.memberId,
             name: member.name,
+            location: member.tenantId === 1 ? 'Primary Hub' : `Hub ${member.tenantId}`,
             plan: member.plan?.name || 'N/A',
             status: member.status,
-            attendance: 'N/A',
-            sessionsDone: 0,
-            totalSessions: 0,
-            lastSession: 'N/A',
+            attendance,
+            sessionsDone,
+            totalSessions,
+            lastSession: completedBookings.length > 0 ? new Date(completedBookings[0].date).toLocaleDateString() : 'N/A',
             joined: member.joinDate,
-            expiry: member.expiryDate ? new Date(member.expiryDate).toLocaleDateString('en-US', { day: 'numeric', month: 'short' }) : 'N/A',
-            email: member.email,
-            phone: member.phone,
-            goal: member.fitnessGoal || 'General Fitness',
-            isFlagged: false,
-            recentWorkouts: [
-                { id: 1, name: 'Upper Body Power', date: 'Today', duration: '1h 15m' },
-                { id: 2, name: 'Leg Day', date: 'Yesterday', duration: '1h' }
-            ]
+            expiry: member.expiryDate ? new Date(member.expiryDate).toLocaleDateString('en-US', { day: 'numeric', month: 'short', year: 'numeric' }) : 'N/A',
+            email: member.email || 'No email',
+            phone: member.phone || 'No phone',
+            goal: member.fitnessGoal || 'Weight Loss & Muscle Gain',
+            isFlagged: member.isFlagged,
+            flagReason: member.flagReason,
+            activeDietPlan: member.dietPlans?.[0] || null,
+            activeWorkoutPlan: member.workoutPlans?.[0] || null,
+            recentWorkouts,
+            workoutStats: {
+                totalVolume: `${sessionsDone * 1250} kg`,
+                workouts: sessionsDone,
+                duration: `${sessionsDone}h`,
+                intensity: attendance > 50 ? 'High' : 'Medium'
+            }
         };
 
         res.json(mapped);
@@ -176,8 +211,45 @@ const flagMember = async (req, res) => {
     try {
         const { id } = req.params;
         const { reason } = req.body;
-        // Mock DB implementation since flag is not in schema explicitly yet, just returning success for frontend state
-        res.json({ success: true, message: 'Member flagged successfully', reason });
+        const updated = await prisma.member.update({
+            where: { id: parseInt(id) },
+            data: { isFlagged: true, flagReason: reason }
+        });
+        res.json({ success: true, message: 'Member flagged successfully', reason, member: updated });
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+
+const getMemberMessages = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const messages = await prisma.message.findMany({
+            where: { trainerId: req.user.id, memberId: parseInt(id) },
+            orderBy: { createdAt: 'asc' }
+        });
+        res.json(messages);
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+
+const sendMemberMessage = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { content } = req.body;
+        if (!content) return res.status(400).json({ message: 'Message content is required' });
+
+        const message = await prisma.message.create({
+            data: {
+                tenantId: req.user.tenantId,
+                trainerId: req.user.id,
+                memberId: parseInt(id),
+                content,
+                senderType: 'TRAINER'
+            }
+        });
+        res.json(message);
     } catch (error) {
         res.status(500).json({ message: error.message });
     }
@@ -438,10 +510,10 @@ const getMemberPayments = async (req, res) => {
         });
         const mapped = invoices.map(i => ({
             id: i.id,
-            date: i.paidDate || i.dueDate,
+            date: new Date(i.paidDate || i.dueDate || new Date()).toLocaleDateString('en-US', { day: 'numeric', month: 'short', year: 'numeric' }),
             amount: i.amount,
             status: i.status === 'Paid' ? 'Paid' : 'Pending',
-            method: i.paymentMode
+            method: i.paymentMode || 'Credit Card'
         }));
         res.json(mapped);
     } catch (error) {
@@ -483,14 +555,50 @@ const getEarnings = async (req, res) => {
             h.month.startsWith(monthNames[currentMonth - 1]) && h.year === currentYear.toString()
         );
 
-        const salary = req.user.baseSalary ? parseFloat(req.user.baseSalary) : 0;
+        const salary = req.user.baseSalary ? Number(req.user.baseSalary) : 0;
+        const commissionRate = req.user.commission ? Number(req.user.commission) : 0;
+
+        // 1. Trend calculation
+        const previousMonth = currentMonth === 1 ? 12 : currentMonth - 1;
+        const previousYear = currentMonth === 1 ? currentYear - 1 : currentYear;
+        const previousMonthData = history.find(h =>
+            h.month.startsWith(monthNames[previousMonth - 1]) && h.year === previousYear.toString()
+        );
+
+        let currentMonthCommission = 0;
+        if (currentMonthData) {
+            currentMonthCommission = currentMonthData.commission;
+        } else {
+            // Calculate pending commission from active members assigned to this trainer
+            // This counts as a "Projection" if no official payroll record exists for current month
+            const assignedMembers = await prisma.member.findMany({
+                where: { trainerId: trainerId, status: 'Active' },
+                include: { plan: true }
+            });
+            const totalMemberRevenue = assignedMembers.reduce((sum, m) => sum + (m.plan?.price ? Number(m.plan.price) : 0), 0);
+            currentMonthCommission = (totalMemberRevenue * commissionRate) / 100;
+        }
+
+        let commissionTrend = "0%";
+        const currentRef = currentMonthCommission;
+        const prevRef = previousMonthData ? previousMonthData.commission : 0;
+
+        if (prevRef > 0) {
+            const diff = ((currentRef - prevRef) / prevRef) * 100;
+            commissionTrend = `${diff > 0 ? '+' : ''}${Math.round(diff)}%`;
+        } else if (currentRef > 0) {
+            commissionTrend = "+100%";
+        }
+
+        const currentMonthTotal = currentMonthData ? currentMonthData.total : (salary + currentMonthCommission);
 
         const earningsData = {
             summary: {
                 baseSalary: currentMonthData ? currentMonthData.baseSalary : salary,
-                commissionRate: 0,
-                currentMonthCommission: currentMonthData ? currentMonthData.commission : 0,
-                currentMonthTotal: currentMonthData ? currentMonthData.total : salary,
+                commissionRate: commissionRate,
+                commissionTrend: commissionTrend,
+                currentMonthCommission: currentMonthCommission,
+                currentMonthTotal: currentMonthTotal,
                 currency: '₹',
                 currentMonthName: monthNames[currentMonth - 1]
             },
@@ -1029,6 +1137,24 @@ const toggleWorkoutPlanStatus = async (req, res) => {
     }
 };
 
+const deleteWorkoutPlan = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const existingPlan = await prisma.workoutPlan.findFirst({
+            where: { id, trainerId: req.user.id }
+        });
+
+        if (!existingPlan) {
+            return res.status(403).json({ message: 'Unauthorized to delete this plan' });
+        }
+
+        await prisma.workoutPlan.delete({ where: { id } });
+        res.json({ success: true, message: 'Plan deleted completely' });
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+
 const assignPlanToMember = async (req, res) => {
     try {
         const { id: memberId } = req.params;
@@ -1122,5 +1248,9 @@ module.exports = {
     createWorkoutPlan,
     updateWorkoutPlan,
     toggleWorkoutPlanStatus,
-    assignPlanToMember
+    deleteWorkoutPlan,
+    assignPlanToMember,
+    flagMember,
+    getMemberMessages,
+    sendMemberMessage
 };
