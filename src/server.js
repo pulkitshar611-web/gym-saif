@@ -1,10 +1,14 @@
 // gym_backend/src/server.js
 const app = require('./app');
 require('./utils/cronJobs');
-// Trigger restart
+const http = require('http');
+const { initSocket } = require('./utils/socket');
+const server = http.createServer(app);
+
+initSocket(server);
 
 const PORT = process.env.PORT || 8000;
 
-app.listen(PORT, () => {
+server.listen(PORT, () => {
     console.log(`Server is running on port ${PORT}`);
 });

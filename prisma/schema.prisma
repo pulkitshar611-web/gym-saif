@@ -57,7 +57,7 @@ model Tenant {
   serviceRequests       ServiceRequest[]
   amenities             Amenity[]
   promoCodes            PromoCode[]
-  messages              Message[]
+  conversations         Conversation[]
 
   @@map("tenant")
 }
@@ -102,7 +102,8 @@ model User {
   trainerDietPlans      DietPlan[]           @relation("TrainerDietPlan")
   trainerWorkoutPlans   WorkoutPlan[]        @relation("TrainerWorkoutPlan")
   member                Member[]             @relation("UserToMember")
-  trainerMessages       Message[]            @relation("TrainerMessages")
+  conversations        Conversation[]       @relation("UserConversations")
+  sentMessages         ChatMessage[]        @relation("SentMessages")
 
   @@map("user")
 }
@@ -272,7 +273,6 @@ model Member {
   dietPlans DietPlan[]
   workoutPlans WorkoutPlan[]
   serviceRequests ServiceRequest[]
-  messages Message[] @relation("MemberMessages")
 
   cards          Json?
 
@@ -817,18 +817,28 @@ model PromoCode {
   @@map("promo_code")
 }
 
-model Message {
-  id         Int      @id @default(autoincrement())
-  tenantId   Int
-  tenant     Tenant   @relation(fields: [tenantId], references: [id])
-  trainerId  Int
-  trainer    User     @relation("TrainerMessages", fields: [trainerId], references: [id])
-  memberId   Int
-  member     Member   @relation("MemberMessages", fields: [memberId], references: [id])
-  senderType String   // 'TRAINER' or 'MEMBER'
-  content    String   @db.Text
-  isRead     Boolean  @default(false)
-  createdAt  DateTime @default(now())
+model Conversation {
+  id           String        @id @default(uuid())
+  tenantId     Int?          // Optional: if null, it's a cross-tenant chat (e.g. Superadmin to Branch Admin)
+  tenant       Tenant?       @relation(fields: [tenantId], references: [id])
+  participants User[]        @relation("UserConversations")
+  messages     ChatMessage[]
+  lastMessage  String?       @db.Text
+  updatedAt    DateTime      @updatedAt
+  createdAt    DateTime      @default(now())
 
-  @@map("message")
+  @@map("conversation")
+}
+
+model ChatMessage {
+  id             String       @id @default(uuid())
+  conversationId String
+  conversation   Conversation @relation(fields: [conversationId], references: [id])
+  senderId       Int
+  sender         User         @relation("SentMessages", fields: [senderId], references: [id])
+  content        String       @db.Text
+  isRead         Boolean      @default(false)
+  createdAt      DateTime     @default(now())
+
+  @@map("chat_message")
 }
