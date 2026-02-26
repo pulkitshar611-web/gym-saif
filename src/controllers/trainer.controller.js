@@ -143,7 +143,30 @@ const getMemberById = async (req, res) => {
         if (!member || member.trainerId !== req.user.id) {
             return res.status(403).json({ message: 'Unauthorized or not found' });
         }
-        res.json(member);
+
+        const mapped = {
+            id: member.id,
+            memberId: member.memberId,
+            name: member.name,
+            plan: member.plan?.name || 'N/A',
+            status: member.status,
+            attendance: 'N/A',
+            sessionsDone: 0,
+            totalSessions: 0,
+            lastSession: 'N/A',
+            joined: member.joinDate,
+            expiry: member.expiryDate ? new Date(member.expiryDate).toLocaleDateString('en-US', { day: 'numeric', month: 'short' }) : 'N/A',
+            email: member.email,
+            phone: member.phone,
+            goal: member.fitnessGoal || 'General Fitness',
+            isFlagged: false,
+            recentWorkouts: [
+                { id: 1, name: 'Upper Body Power', date: 'Today', duration: '1h 15m' },
+                { id: 2, name: 'Leg Day', date: 'Yesterday', duration: '1h' }
+            ]
+        };
+
+        res.json(mapped);
     } catch (error) {
         res.status(500).json({ message: error.message });
     }
@@ -164,18 +187,23 @@ const getSessions = async (req, res) => {
     try {
         // Find classes and bookings taught by this trainer
         const classes = await prisma.class.findMany({
-            where: { trainerId: req.user.id, tenantId: req.user.tenantId }
+            where: { trainerId: req.user.id, tenantId: req.user.tenantId },
+            include: { bookings: true }
         });
+
+        const localNow = new Date();
+        const localTodayStr = `${localNow.getFullYear()}-${String(localNow.getMonth() + 1).padStart(2, '0')}-${String(localNow.getDate()).padStart(2, '0')}`;
 
         const mappedSessions = classes.map(c => ({
             id: c.id,
             title: c.name,
             time: c.schedule?.time || 'TBD',
-            date: c.schedule?.date || new Date().toISOString().split('T')[0],
+            date: c.schedule?.date || localTodayStr,
             type: c.description || 'Group Class',
             location: c.location || 'Studio',
-            members: 0, // Need to count active bookings
+            members: c.bookings?.length || 0,
             maxMembers: c.maxCapacity,
+            duration: c.duration || '60 min',
             status: c.status
         }));
 
@@ -213,10 +241,128 @@ const createSession = async (req, res) => {
     }
 };
 
+const updateSession = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { title, date, time, duration, location, maxMembers, type } = req.body;
+        const trainerId = req.user.id;
+        const tenantId = req.user.tenantId;
+
+        const session = await prisma.class.findFirst({
+            where: { id: parseInt(id), trainerId, tenantId }
+        });
+
+        if (!session) {
+            return res.status(403).json({ message: 'Unauthorized or session not found' });
+        }
+
+        const schedule = { date, time };
+
+        const updated = await prisma.class.update({
+            where: { id: parseInt(id) },
+            data: {
+                name: title,
+                schedule,
+                duration,
+                location,
+                maxCapacity: parseInt(maxMembers),
+                description: type
+            }
+        });
+
+        res.json(updated);
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+
+const deleteSession = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const trainerId = req.user.id;
+        const tenantId = req.user.tenantId;
+
+        const session = await prisma.class.findFirst({
+            where: { id: parseInt(id), trainerId, tenantId }
+        });
+
+        if (!session) {
+            return res.status(403).json({ message: 'Unauthorized or session not found' });
+        }
+
+        // Delete associated bookings first to maintain integrity
+        await prisma.booking.deleteMany({
+            where: { classId: parseInt(id) }
+        });
+
+        await prisma.class.delete({
+            where: { id: parseInt(id) }
+        });
+
+        res.json({ success: true, message: 'Session deleted successfully' });
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+
+const getSessionRoster = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const trainerId = req.user.id;
+        const tenantId = req.user.tenantId;
+
+        const session = await prisma.class.findFirst({
+            where: { id: parseInt(id), trainerId, tenantId },
+            include: {
+                bookings: {
+                    include: {
+                        member: {
+                            select: {
+                                name: true,
+                                email: true,
+                                phone: true,
+                                plan: { select: { name: true } }
+                            }
+                        }
+                    }
+                }
+            }
+        });
+
+        if (!session) {
+            return res.status(403).json({ message: 'Unauthorized or session not found' });
+        }
+
+        const roster = session.bookings.map(b => ({
+            name: b.member?.name || 'Unknown',
+            email: b.member?.email || 'N/A',
+            phone: b.member?.phone || 'N/A',
+            plan: b.member?.plan?.name || 'N/A',
+            bookingDate: b.date
+        }));
+
+        res.json(roster);
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+
 const updateSessionStatus = async (req, res) => {
     try {
         const { id } = req.params;
         const { status } = req.body;
+        const trainerId = req.user.id;
+        const tenantId = req.user.tenantId;
+
+        // Ensure owner
+        const session = await prisma.class.findFirst({
+            where: { id: parseInt(id), trainerId, tenantId }
+        });
+
+        if (!session) {
+            return res.status(403).json({ message: 'Unauthorized or session not found' });
+        }
+
         const updated = await prisma.class.update({
             where: { id: parseInt(id) },
             data: { status }
@@ -305,61 +451,52 @@ const getMemberPayments = async (req, res) => {
 
 const getEarnings = async (req, res) => {
     try {
-        const { id, joinedDate, baseSalary, name } = req.user;
+        const trainerId = req.user.id;
         const currentYear = new Date().getFullYear();
-        const currentMonth = new Date().getMonth(); // 0-indexed
+        const currentMonth = new Date().getMonth() + 1; // 1-indexed for DB
 
-        // Use trainer's base salary or default
-        const salary = baseSalary ? parseFloat(baseSalary) : 45000;
-        const commissionRate = 15; // Could be from user.config
+        const monthNames = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
 
-        // Generate history for last 2 years
-        const history = [];
-        const months = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+        // 1. Fetch real payroll history from DB
+        const payrollHistory = await prisma.payroll.findMany({
+            where: { staffId: trainerId },
+            orderBy: [{ year: 'desc' }, { month: 'desc' }]
+        });
 
-        for (let year of [currentYear, currentYear - 1]) {
-            const startMonth = (year === currentYear) ? currentMonth : 11;
-            for (let m = startMonth; m >= 0; m--) {
-                // For demo/simulated data, we create some values
-                const monthName = months[m];
-                const isCurrentMonth = (year === currentYear && m === currentMonth);
+        // 2. Format history for frontend
+        const history = payrollHistory.map(record => ({
+            id: record.id,
+            year: record.year.toString(),
+            month: `${monthNames[record.month - 1]} ${record.year}`,
+            baseSalary: Number(record.amount) - Number(record.incentives || 0) + Number(record.deductions || 0),
+            commission: Number(record.incentives || 0),
+            bonus: 0,
+            incentives: Number(record.incentives || 0),
+            deductions: Number(record.deductions || 0),
+            total: Number(record.amount),
+            status: record.status,
+            details: []
+        }));
 
-                // Deterministic pseudo-random values based on user ID and date
-                const seed = (id * 10000) + (year * 100) + m;
-                const commission = Math.floor((Math.sin(seed) * 5000) + 10000);
-                const bonus = Math.floor(Math.sin(seed + 1) * 2000);
-                const total = salary + commission + (bonus > 0 ? bonus : 0);
+        // 3. Fallback: If no history exists for current month, show base salary from user profile
+        const currentMonthData = history.find(h =>
+            h.month.startsWith(monthNames[currentMonth - 1]) && h.year === currentYear.toString()
+        );
 
-                history.push({
-                    id: `${year}-${m}`,
-                    year: year.toString(),
-                    month: `${monthName} ${year}`,
-                    baseSalary: salary,
-                    commission: commission,
-                    bonus: bonus > 0 ? bonus : 0,
-                    total: total,
-                    status: isCurrentMonth ? 'Pending' : 'Paid',
-                    details: [
-                        { id: 101, member: 'Rahul Sharma', type: 'Personal Training', amount: Math.floor(commission * 0.6), date: `${monthName} 12, ${year}` },
-                        { id: 102, member: 'Priya Singh', type: 'Diet Plan', amount: Math.floor(commission * 0.4), date: `${monthName} 15, ${year}` },
-                    ]
-                });
-            }
-        }
-
-        const currentMonthData = history.find(h => h.id === `${currentYear}-${currentMonth}`) || history[0];
+        const salary = req.user.baseSalary ? parseFloat(req.user.baseSalary) : 0;
 
         const earningsData = {
             summary: {
-                baseSalary: salary,
-                commissionRate: commissionRate,
-                currentMonthCommission: currentMonthData.commission,
-                currentMonthTotal: currentMonthData.total,
+                baseSalary: currentMonthData ? currentMonthData.baseSalary : salary,
+                commissionRate: 0,
+                currentMonthCommission: currentMonthData ? currentMonthData.commission : 0,
+                currentMonthTotal: currentMonthData ? currentMonthData.total : salary,
                 currency: '₹',
-                currentMonthName: months[currentMonth]
+                currentMonthName: monthNames[currentMonth - 1]
             },
             history: history
         };
+
         res.json(earningsData);
     } catch (error) {
         res.status(500).json({ message: error.message });
@@ -369,19 +506,32 @@ const getEarnings = async (req, res) => {
 const getAttendance = async (req, res) => {
     try {
         const { id, tenantId } = req.user;
+        const { date: localDate } = req.query; // YYYY-MM-DD from client
 
-        // Find today's date safely
-        const targetDateStr = new Date().toLocaleDateString('en-CA'); // 'YYYY-MM-DD'
+        // Normalize target date to UTC Midnight
+        let targetDate;
+        if (localDate) {
+            targetDate = new Date(localDate + "T00:00:00.000Z");
+        } else {
+            targetDate = new Date();
+            targetDate.setUTCHours(0, 0, 0, 0);
+        }
 
         // Fetch logs
         const logs = await prisma.attendance.findMany({
             where: { userId: id, tenantId },
             orderBy: { date: 'desc' },
-            take: 30
+            take: 100 // Ensure we cover at least 1 month
         });
 
-        // Find today's record
-        const todayRecord = logs.find(log => new Date(log.date).toLocaleDateString('en-CA') === targetDateStr);
+        // Find today's record correctly using the normalized date
+        const todayRecord = await prisma.attendance.findFirst({
+            where: {
+                userId: id,
+                tenantId,
+                date: targetDate
+            }
+        });
 
         // Leave Requests
         const leaveRequests = await prisma.leaveRequest.findMany({
@@ -389,27 +539,41 @@ const getAttendance = async (req, res) => {
             orderBy: { createdAt: 'desc' }
         });
 
+        // Helper for unique day counting (Month-specific)
+        const currentUTCMonth = localDate ? new Date(localDate).getUTCMonth() : new Date().getUTCMonth();
+        const currentUTCYear = localDate ? new Date(localDate).getUTCFullYear() : new Date().getUTCFullYear();
+
+        const uniqueDays = new Set(logs
+            .filter(l => {
+                const d = new Date(l.date);
+                return (l.status === 'Present' || l.status === 'Late') &&
+                    d.getUTCMonth() === currentUTCMonth &&
+                    d.getUTCFullYear() === currentUTCYear;
+            })
+            .map(l => new Date(l.date).toISOString().split('T')[0])
+        );
+
         const attendanceData = {
             summary: {
-                todayCheckIn: todayRecord?.checkIn ? new Date(todayRecord.checkIn).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : 'Not yet',
-                todayCheckOut: todayRecord?.checkOut ? new Date(todayRecord.checkOut).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : 'Not yet',
+                todayCheckIn: todayRecord?.checkIn || null,
+                todayCheckOut: todayRecord?.checkOut || null,
                 totalHoursToday: todayRecord?.checkOut ? ((new Date(todayRecord.checkOut) - new Date(todayRecord.checkIn)) / 3600000).toFixed(1) + 'h' : '0.0h',
-                daysPresentMonth: logs.filter(l => l.status === 'Present').length,
-                totalWorkDays: 22
+                daysPresentMonth: uniqueDays.size,
+                totalWorkDays: new Date(currentUTCYear, currentUTCMonth + 1, 0).getDate()
             },
             logs: logs.map(l => ({
                 id: l.id,
-                date: new Date(l.date).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }),
-                checkIn: l.checkIn ? new Date(l.checkIn).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '-',
-                checkOut: l.checkOut ? new Date(l.checkOut).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '-',
+                date: l.date, // Raw date ISO
+                checkIn: l.checkIn,
+                checkOut: l.checkOut,
                 hours: l.checkOut ? ((new Date(l.checkOut) - new Date(l.checkIn)) / 3600000).toFixed(1) + 'h' : '-',
                 status: l.status
             })),
             leaveRequests: leaveRequests.map(l => ({
                 id: l.id,
                 type: l.type,
-                start: new Date(l.startDate).toLocaleDateString(),
-                end: new Date(l.endDate).toLocaleDateString(),
+                start: l.startDate,
+                end: l.endDate,
                 reason: l.reason,
                 status: l.status
             }))
@@ -423,38 +587,45 @@ const getAttendance = async (req, res) => {
 const checkInTrainer = async (req, res) => {
     try {
         const { id, tenantId, role } = req.user;
-        const targetDateStr = new Date().toLocaleDateString('en-CA'); // 'YYYY-MM-DD'
+        const { localDate } = req.body; // Expecting YYYY-MM-DD
 
-        const recentLogs = await prisma.attendance.findMany({
-            where: { userId: id, tenantId },
-            orderBy: { date: 'desc' },
-            take: 5
+        let targetDate;
+        if (localDate) {
+            targetDate = new Date(localDate + "T00:00:00.000Z");
+        } else {
+            targetDate = new Date();
+            targetDate.setUTCHours(0, 0, 0, 0);
+        }
+
+        let record = await prisma.attendance.findFirst({
+            where: {
+                userId: id,
+                tenantId,
+                date: targetDate
+            }
         });
 
-        let record = recentLogs.find(log => new Date(log.date).toLocaleDateString('en-CA') === targetDateStr);
-
         if (!record) {
-            // Remove time info to store clean date
-            const cleanDate = new Date();
-            cleanDate.setHours(0, 0, 0, 0);
-
             record = await prisma.attendance.create({
                 data: {
                     userId: id,
                     tenantId,
                     type: role,
-                    date: cleanDate,
+                    date: targetDate, // Normalized to UTC Midnight
                     checkIn: new Date(),
                     status: 'Present'
                 }
             });
+            return res.json({ success: true, message: 'Checked in successfully', data: record });
         } else if (!record.checkOut) {
             record = await prisma.attendance.update({
                 where: { id: record.id },
                 data: { checkOut: new Date() }
             });
+            return res.json({ success: true, message: 'Checked out successfully', data: record });
+        } else {
+            return res.status(400).json({ message: 'You have already completed your attendance for today' });
         }
-        res.json({ success: true, message: 'Check-in/out successful', data: record });
     } catch (error) {
         res.status(500).json({ message: error.message });
     }
@@ -470,8 +641,8 @@ const requestLeave = async (req, res) => {
                 userId: id,
                 tenantId: tenantId || 1,
                 type: type || 'Vacation',
-                startDate: new Date(start),
-                endDate: new Date(end),
+                startDate: new Date(start + "T00:00:00.000Z"),
+                endDate: new Date(end + "T00:00:00.000Z"),
                 reason: reason || ''
             }
         });
@@ -513,7 +684,7 @@ const getAvailability = async (req, res) => {
         }
 
         const timeOffRequests = await prisma.leaveRequest.findMany({
-            where: { userId: id, status: 'Approved' }
+            where: { userId: id }
         });
 
         res.json({
@@ -522,7 +693,8 @@ const getAvailability = async (req, res) => {
                 id: l.id,
                 start: new Date(l.startDate).toISOString().split('T')[0],
                 end: new Date(l.endDate).toISOString().split('T')[0],
-                reason: l.reason
+                reason: l.reason,
+                status: l.status
             })),
             preferences: typeof availability.preferences === 'string' ? JSON.parse(availability.preferences) : availability.preferences
         });
@@ -610,12 +782,22 @@ const getClassesForTrainer = async (req, res) => {
 
         const formatted = classes.map(c => {
             let scheduleStr = 'Not set';
-            if (c.schedule && Array.isArray(c.schedule) && c.schedule.length > 0) {
-                scheduleStr = c.schedule.map(s => `${s.day} ${s.startTime}-${s.endTime}`).join(', ');
-            } else if (typeof c.schedule === 'string') {
-                scheduleStr = c.schedule;
-            } else if (typeof c.schedule === 'object' && c.schedule.days) {
-                scheduleStr = `${c.schedule.days.join(', ')} @ ${c.schedule.time}`;
+            const sched = typeof c.schedule === 'string' ? JSON.parse(c.schedule) : c.schedule;
+
+            if (sched && Array.isArray(sched) && sched.length > 0) {
+                scheduleStr = sched.map(s => `${s.day || s.date} ${s.startTime || s.time}-${s.endTime || ''}`).join(', ');
+            } else if (typeof sched === 'object' && sched !== null) {
+                if (sched.date) {
+                    const [y, m, d] = sched.date.split('-').map(Number);
+                    const dObj = new Date(y, m - 1, d);
+                    scheduleStr = `${dObj.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })} @ ${sched.time || 'TBD'}`;
+                } else if (sched.days) {
+                    scheduleStr = `${Array.isArray(sched.days) ? sched.days.join(', ') : sched.days} @ ${sched.time || 'TBD'}`;
+                } else {
+                    scheduleStr = JSON.stringify(sched);
+                }
+            } else if (typeof sched === 'string') {
+                scheduleStr = sched;
             }
 
             return {
@@ -729,6 +911,16 @@ const updateDietPlan = async (req, res) => {
     try {
         const { id } = req.params;
         const { clientId, name, target, duration, calories, macros, meals, notes, status } = req.body;
+
+        // Ensure ownership
+        const existingPlan = await prisma.dietPlan.findFirst({
+            where: { id, trainerId: req.user.id }
+        });
+
+        if (!existingPlan) {
+            return res.status(403).json({ message: 'Unauthorized to update this plan' });
+        }
+
         const plan = await prisma.dietPlan.update({
             where: { id },
             data: {
@@ -746,7 +938,14 @@ const updateDietPlan = async (req, res) => {
 const toggleDietPlanStatus = async (req, res) => {
     try {
         const { id } = req.params;
-        const plan = await prisma.dietPlan.findUnique({ where: { id } });
+        const plan = await prisma.dietPlan.findFirst({
+            where: { id, trainerId: req.user.id }
+        });
+
+        if (!plan) {
+            return res.status(403).json({ message: 'Unauthorized to modify this plan' });
+        }
+
         const updated = await prisma.dietPlan.update({
             where: { id },
             data: { status: plan.status === 'Active' ? 'Inactive' : 'Active' }
@@ -793,6 +992,16 @@ const updateWorkoutPlan = async (req, res) => {
     try {
         const { id } = req.params;
         const { clientId, name, level, duration, goal, volume, timePerSession, intensity, status, days } = req.body;
+
+        // Ensure ownership
+        const existingPlan = await prisma.workoutPlan.findFirst({
+            where: { id, trainerId: req.user.id }
+        });
+
+        if (!existingPlan) {
+            return res.status(403).json({ message: 'Unauthorized to update this plan' });
+        }
+
         const plan = await prisma.workoutPlan.update({
             where: { id },
             data: {
@@ -815,6 +1024,64 @@ const toggleWorkoutPlanStatus = async (req, res) => {
             data: { status: plan.status === 'Active' ? 'Inactive' : 'Active' }
         });
         res.json(updated);
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+
+const assignPlanToMember = async (req, res) => {
+    try {
+        const { id: memberId } = req.params;
+        const { planId, type, startDate, endDate, notes } = req.body;
+        const parsedMemberId = parseInt(memberId);
+
+        const member = await prisma.member.findUnique({ where: { id: parsedMemberId } });
+        if (!member || member.trainerId !== req.user.id) {
+            return res.status(403).json({ message: 'Unauthorized or member not found' });
+        }
+
+        if (type === 'Diet') {
+            const template = await prisma.dietPlan.findUnique({ where: { id: planId } });
+            if (!template) return res.status(404).json({ message: 'Plan not found' });
+            const newPlan = await prisma.dietPlan.create({
+                data: {
+                    tenantId: template.tenantId,
+                    trainerId: req.user.id,
+                    clientId: parsedMemberId,
+                    name: template.name,
+                    target: template.target,
+                    duration: `${startDate} to ${endDate}`, // Store in duration or ignore
+                    calories: template.calories,
+                    macros: template.macros,
+                    meals: template.meals,
+                    notes: notes || template.notes,
+                    status: 'Active'
+                }
+            });
+            return res.status(201).json(newPlan);
+        } else if (type === 'Workout') {
+            const template = await prisma.workoutPlan.findUnique({ where: { id: planId } });
+            if (!template) return res.status(404).json({ message: 'Plan not found' });
+            const newPlan = await prisma.workoutPlan.create({
+                data: {
+                    tenantId: template.tenantId,
+                    trainerId: req.user.id,
+                    clientId: parsedMemberId,
+                    name: template.name,
+                    level: template.level,
+                    duration: `${startDate} to ${endDate}`, // Store date range
+                    goal: template.goal,
+                    volume: template.volume,
+                    timePerSession: template.timePerSession,
+                    intensity: template.intensity,
+                    days: template.days,
+                    status: 'Active'
+                }
+            });
+            return res.status(201).json(newPlan);
+        }
+
+        res.status(400).json({ message: 'Invalid plan type' });
     } catch (error) {
         res.status(500).json({ message: error.message });
     }
@@ -844,6 +1111,9 @@ module.exports = {
     deleteTimeOff,
     getClassesForTrainer,
     getClassByIdForTrainer,
+    updateSession,
+    deleteSession,
+    getSessionRoster,
     getDietPlans,
     createDietPlan,
     updateDietPlan,
@@ -851,5 +1121,6 @@ module.exports = {
     getWorkoutPlans,
     createWorkoutPlan,
     updateWorkoutPlan,
-    toggleWorkoutPlanStatus
+    toggleWorkoutPlanStatus,
+    assignPlanToMember
 };

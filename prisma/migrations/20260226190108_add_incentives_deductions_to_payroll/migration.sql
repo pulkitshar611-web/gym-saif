@@ -1,0 +1,3 @@
+-- AlterTable
+ALTER TABLE `payroll` ADD COLUMN `deductions` DECIMAL(10, 2) NOT NULL DEFAULT 0.00,
+    ADD COLUMN `incentives` DECIMAL(10, 2) NOT NULL DEFAULT 0.00;

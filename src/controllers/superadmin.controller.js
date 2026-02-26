@@ -731,7 +731,7 @@ const getStaffMembers = async (req, res) => {
 
 const addStaffMember = async (req, res) => {
     try {
-        const { role = 'STAFF', branch, ...restUserData } = req.body;
+        const { role = 'STAFF', branch, dob, ...restUserData } = req.body;
         let tenantId = req.user.tenantId;
 
         if (req.user.role === 'SUPER_ADMIN' && branch) {
@@ -755,6 +755,7 @@ const addStaffMember = async (req, res) => {
                 password: hashedPassword,
                 role,
                 tenantId: tenantId || null,
+                dob: dob ? new Date(dob) : null,
                 baseSalary: safeUserData.baseSalary ? parseFloat(safeUserData.baseSalary) : null,
                 commission: safeUserData.commission ? parseFloat(safeUserData.commission) : 0
             }
@@ -780,9 +781,9 @@ const updateStaffMember = async (req, res) => {
     try {
         const { id } = req.params;
         const {
-            name, email, phone, department, role,
+            name, email, phone, department, role, dob,
             joiningDate, status, baseSalary, commission, accountNumber, ifsc,
-            trainerConfig, salesConfig, managerConfig, documents
+            trainerConfig, salesConfig, managerConfig, shift, documents
         } = req.body;
 
         const updateData = {};
@@ -795,10 +796,15 @@ const updateStaffMember = async (req, res) => {
         if (commission !== undefined) updateData.commission = commission ? parseFloat(commission) : 0;
         if (accountNumber !== undefined) updateData.accountNumber = accountNumber;
         if (ifsc !== undefined) updateData.ifsc = ifsc;
+        if (shift !== undefined) updateData.shift = shift;
         if (documents !== undefined) updateData.documents = documents;
 
         if (joiningDate) {
             updateData.joinedDate = new Date(joiningDate);
+        }
+
+        if (dob) {
+            updateData.dob = new Date(dob);
         }
 
         if (role) {

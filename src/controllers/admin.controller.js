@@ -75,8 +75,46 @@ const addMember = async (req, res) => {
             }
         }
 
+        // Create User account for the member first to ensure consistency
+        const bcrypt = require('bcryptjs');
+        const hashedPassword = await bcrypt.hash('123456', 10);
+        const userEmail = email || `member${Date.now()}@system.com`;
+
+        const newUser = await prisma.user.create({
+            data: {
+                name,
+                email: userEmail,
+                password: hashedPassword,
+                phone: phone || '',
+                role: 'MEMBER',
+                tenantId,
+                status: 'Active'
+            }
+        });
+
+        let expiryDate = undefined;
+        let plan = null;
+        if (planId) {
+            plan = await prisma.membershipPlan.findUnique({
+                where: { id: parseInt(planId) }
+            });
+            if (plan) {
+                const finalStartDate = req.body.startDate || req.body.joinDate;
+                const start = finalStartDate ? new Date(finalStartDate) : new Date();
+                expiryDate = new Date(start);
+                if (plan.durationType === 'Months') {
+                    expiryDate.setMonth(expiryDate.getMonth() + plan.duration);
+                } else if (plan.durationType === 'Days') {
+                    expiryDate.setDate(expiryDate.getDate() + plan.duration);
+                } else if (plan.durationType === 'Years') {
+                    expiryDate.setFullYear(expiryDate.getFullYear() + plan.duration);
+                }
+            }
+        }
+
         const newMember = await prisma.member.create({
             data: {
+                userId: newUser.id,
                 memberId: `MEM-${Date.now()}`,
                 tenantId,
                 name,
@@ -85,11 +123,9 @@ const addMember = async (req, res) => {
                 planId: planId ? parseInt(planId) : null,
                 status: 'Active',
                 avatar: avatarUrl,
-                // Add other fields from body if necessary (gender, etc)
-                // Assuming schema supports them or will ignore if not mapped
-                // Let's add common fields if passed
                 gender: req.body.gender,
-                joinDate: req.body.startDate ? new Date(req.body.startDate) : undefined,
+                joinDate: (req.body.startDate || req.body.joinDate) ? new Date(req.body.startDate || req.body.joinDate) : undefined,
+                expiryDate: expiryDate,
                 medicalHistory: req.body.medicalHistory,
                 fitnessGoal: req.body.fitnessGoal,
                 emergencyName: req.body.emergencyName,
@@ -99,23 +135,18 @@ const addMember = async (req, res) => {
         });
 
         // Auto-generate invoice if a plan is selected
-        if (planId) {
-            const plan = await prisma.membershipPlan.findUnique({
-                where: { id: parseInt(planId) }
+        if (plan) {
+            await prisma.invoice.create({
+                data: {
+                    tenantId,
+                    invoiceNumber: `INV-${Date.now()}`,
+                    memberId: newMember.id,
+                    amount: plan.price,
+                    paymentMode: 'Cash',
+                    status: 'Unpaid',
+                    dueDate: new Date()
+                }
             });
-            if (plan) {
-                await prisma.invoice.create({
-                    data: {
-                        tenantId,
-                        invoiceNumber: `INV-${Date.now()}`,
-                        memberId: newMember.id,
-                        amount: plan.price,
-                        paymentMode: 'Cash',
-                        status: 'Unpaid',
-                        dueDate: new Date()
-                    }
-                });
-            }
         }
 
         res.status(201).json(newMember);
@@ -159,7 +190,27 @@ const updateMember = async (req, res) => {
             benefits: benefits || []
         };
 
-        if (planId) updateData.planId = parseInt(planId);
+        const existingMember = await prisma.member.findUnique({ where: { id: parseInt(id) } });
+
+        let expiryDate = undefined;
+        if (planId) {
+            const plan = await prisma.membershipPlan.findUnique({
+                where: { id: parseInt(planId) }
+            });
+            if (plan && existingMember) {
+                updateData.planId = parseInt(planId);
+                const start = startDate ? new Date(startDate) : existingMember.joinDate;
+                expiryDate = new Date(start);
+                if (plan.durationType === 'Months') {
+                    expiryDate.setMonth(expiryDate.getMonth() + plan.duration);
+                } else if (plan.durationType === 'Days') {
+                    expiryDate.setDate(expiryDate.getDate() + plan.duration);
+                } else if (plan.durationType === 'Years') {
+                    expiryDate.setFullYear(expiryDate.getFullYear() + plan.duration);
+                }
+                updateData.expiryDate = expiryDate;
+            }
+        }
         if (startDate) updateData.joinDate = new Date(startDate);
 
         if (avatar && avatar.startsWith('data:image')) {
@@ -457,25 +508,23 @@ const getBookingCalendar = async (req, res) => {
 const getCheckIns = async (req, res) => {
     try {
         const { tenantId, role } = req.user;
-        const { type, search, date, page = 1, limit = 50 } = req.query;
+        const { type, search, date, page = 1, limit = 50, status } = req.query;
 
-        const where = role === 'SUPER_ADMIN' ? {} : { user: { tenantId } };
+        const where = role === 'SUPER_ADMIN' ? {} : { tenantId };
 
         if (type && type !== 'All') {
             if (type === 'Staff') {
-                where.user = { ...where.user, role: { in: ['STAFF', 'TRAINER', 'MANAGER'] } };
+                where.type = { in: ['Staff', 'Trainer', 'Manager'] };
             } else if (type === 'Member' || type === 'MEMBER') {
-                where.user = { ...where.user, role: 'MEMBER' };
+                where.type = 'Member';
             } else {
                 where.type = type;
             }
         }
 
         if (date) {
-            const startOfDay = new Date(date);
-            startOfDay.setHours(0, 0, 0, 0);
-            const endOfDay = new Date(date);
-            endOfDay.setHours(23, 59, 59, 999);
+            const startOfDay = new Date(`${date}T00:00:00`);
+            const endOfDay = new Date(`${date}T23:59:59.999`);
             where.checkIn = { gte: startOfDay, lte: endOfDay };
         }
 
@@ -484,6 +533,16 @@ const getCheckIns = async (req, res) => {
                 ...where.user,
                 name: { contains: search, mode: 'insensitive' }
             };
+        }
+
+        if (status) {
+            if (status === 'checked-in') {
+                where.checkOut = null;
+            } else if (status === 'checked-out') {
+                where.checkOut = { not: null };
+            } else if (status === 'Absent' || status === 'Late') {
+                where.status = status;
+            }
         }
 
         const [attendance, total] = await Promise.all([
@@ -519,6 +578,7 @@ const getCheckIns = async (req, res) => {
                 name: a.user?.name || 'Unknown',
                 membershipId: memberData?.memberId || '-',
                 plan: memberData?.plan?.name || (a.type === 'Member' ? 'Standard' : '-'),
+                shiftTime: a.user?.shift || 'Flexible',
                 role: a.user?.role || a.type,
                 time: a.checkIn ? new Date(a.checkIn).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '-',
                 checkOut: a.checkOut ? new Date(a.checkOut).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '-',
@@ -1174,7 +1234,7 @@ const getChatUsers = async (req, res) => {
 const createPayroll = async (req, res) => {
     try {
         const { tenantId } = req.user;
-        const { staffId, amount, month, year, status } = req.body;
+        const { staffId, amount, month, year, status, incentives, deductions } = req.body;
 
         const monthMap = {
             'January': 1, 'February': 2, 'March': 3, 'April': 4, 'May': 5, 'June': 6,
@@ -1188,6 +1248,8 @@ const createPayroll = async (req, res) => {
                 tenantId,
                 staffId: parseInt(staffId),
                 amount: parseFloat(amount),
+                incentives: parseFloat(incentives || 0),
+                deductions: parseFloat(deductions || 0),
                 month: monthInt,
                 year: parseInt(year),
                 status

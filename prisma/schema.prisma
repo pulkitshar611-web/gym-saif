@@ -81,6 +81,8 @@ model User {
   accountNumber String?
   ifsc          String?
   config        Json? // To store trainerConfig, salesConfig, managerConfig
+  shift         String?  
+  dob           DateTime?
   documents     Json? // To store document URLs (govtId, contract)
 
   joinedDate DateTime  @default(now())
@@ -98,6 +100,7 @@ model User {
   trainerAvailability   TrainerAvailability?
   trainerDietPlans      DietPlan[]           @relation("TrainerDietPlan")
   trainerWorkoutPlans   WorkoutPlan[]        @relation("TrainerWorkoutPlan")
+  member                Member[]             @relation("UserToMember")
 
   @@map("user")
 }
@@ -230,6 +233,7 @@ model Member {
   userId   Int?   @unique
   tenantId Int
   tenant   Tenant @relation(fields: [tenantId], references: [id])
+  user     User?  @relation("UserToMember", fields: [userId], references: [id])
 
   name     String?
   email    String?
@@ -389,8 +393,10 @@ model Locker {
   tenantId     Int?
   tenant       Tenant? @relation(fields: [tenantId], references: [id])
   number       String
-  status       String  @default("Available") // Available, Occupied, Under Maintenance
+  status       String    @default("Available") // Available, Occupied, Under Maintenance
   assignedToId Int?
+  expiryDate   DateTime?
+  notes        String?   @db.Text
 
   @@map("locker")
 }
@@ -463,10 +469,12 @@ model Payroll {
   tenantId Int
   tenant   Tenant  @relation(fields: [tenantId], references: [id])
   staffId  Int
-  amount   Decimal @db.Decimal(10, 2)
-  month    Int
-  year     Int
-  status   String  @default("Pending") // Pending, Processed
+  amount      Decimal @db.Decimal(10, 2)
+  incentives  Decimal @default(0.00) @db.Decimal(10, 2)
+  deductions  Decimal @default(0.00) @db.Decimal(10, 2)
+  month       Int
+  year        Int
+  status      String  @default("Pending") // Pending, Processed
 
   @@map("payroll")
 }
