@@ -16,7 +16,8 @@ const {
     getMemberById,
     getAttendanceReport,
     getBookingReport,
-    getTodaysCheckIns
+    getTodaysCheckIns,
+    getEarnings
 } = require('../controllers/staff.controller');
 const { protect, authorize } = require('../middleware/auth.middleware');
 
@@ -52,5 +53,8 @@ router.post('/payments', collectPayment);
 // Reports
 router.get('/reports/attendance', getAttendanceReport);
 router.get('/reports/bookings', getBookingReport);
+
+// Earnings
+router.get('/earnings', getEarnings);
 
 module.exports = router;

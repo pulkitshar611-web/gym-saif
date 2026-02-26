@@ -24,6 +24,9 @@ const {
     deleteTimeOff,
     getClassesForTrainer,
     getClassByIdForTrainer,
+    updateSession,
+    deleteSession,
+    getSessionRoster,
     getDietPlans,
     createDietPlan,
     updateDietPlan,
@@ -31,7 +34,8 @@ const {
     getWorkoutPlans,
     createWorkoutPlan,
     updateWorkoutPlan,
-    toggleWorkoutPlanStatus
+    toggleWorkoutPlanStatus,
+    assignPlanToMember
 } = require('../controllers/trainer.controller');
 const { getMemberProgressById } = require('../controllers/progress.controller');
 const { protect, authorize } = require('../middleware/auth.middleware');
@@ -52,10 +56,14 @@ router.get('/members/:id', getMemberById);
 router.patch('/members/:id/flag', flagMember);
 router.get('/members/:id/payments', getMemberPayments);
 router.get('/members/:id/progress', getMemberProgressById);
+router.post('/members/:id/assign-plan', assignPlanToMember);
 
 // Sessions
 router.get('/sessions', getSessions);
 router.post('/sessions', createSession);
+router.patch('/sessions/:id', updateSession);
+router.delete('/sessions/:id', deleteSession);
+router.get('/sessions/:id/roster', getSessionRoster);
 router.patch('/sessions/:id/status', updateSessionStatus);
 router.post('/sessions/:id/attendance', saveAttendance);
 router.get('/session-history', getSessionHistory);

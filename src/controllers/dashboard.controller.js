@@ -123,7 +123,7 @@ exports.getStaffDashboard = async (req, res) => {
         });
 
         const assignedTasks = await prisma.task.count({
-            where: { assignedToId: staffId, status: 'Pending' }
+            where: { assignedToId: staffId, status: { not: 'Completed' } }
         });
 
         const pendingPayments = await prisma.invoice.count({
@@ -131,11 +131,11 @@ exports.getStaffDashboard = async (req, res) => {
         });
 
         const highPriorityTasks = await prisma.task.count({
-            where: { assignedToId: staffId, status: 'Pending', priority: 'High' }
+            where: { assignedToId: staffId, status: { not: 'Completed' }, priority: 'High' }
         });
 
         const upcomingClasses = await prisma.class.count({
-            where: { tenantId, status: 'Scheduled' }
+            where: { tenantId, status: { not: 'Completed' } }
         });
 
         // Pending Actions: Unpaid Invoices & New Inquiries
@@ -146,7 +146,7 @@ exports.getStaffDashboard = async (req, res) => {
         });
 
         const recentEnquiries = await prisma.lead.findMany({
-            where: { tenantId, status: 'New' },
+            where: { tenantId, status: { not: 'Contacted' } },
             take: 2,
             orderBy: { createdAt: 'desc' }
         });
@@ -187,7 +187,8 @@ exports.getStaffDashboard = async (req, res) => {
         const collectionToday = todayInvoices.reduce((sum, inv) => sum + Number(inv.amount), 0);
 
         // Let's get actual staff shift or random default
-        const todayShift = '09:00 - 17:00';
+        const userStaff = await prisma.user.findUnique({ where: { id: staffId } });
+        const todayShift = userStaff?.shift || '09:00 - 17:00';
 
         const checkinRecords = await prisma.attendance.findMany({
             where: { tenantId, date: { gte: today } },
@@ -216,13 +217,13 @@ exports.getStaffDashboard = async (req, res) => {
             };
         });
 
-        const thirtyDaysFromNow = new Date(today);
-        thirtyDaysFromNow.setDate(thirtyDaysFromNow.getDate() + 30);
+        const sevenDaysFromNow = new Date(today);
+        sevenDaysFromNow.setDate(sevenDaysFromNow.getDate() + 7);
 
         const expiringMemberships = await prisma.member.findMany({
             where: {
                 tenantId,
-                expiryDate: { gte: today, lte: thirtyDaysFromNow }
+                expiryDate: { gte: today, lte: sevenDaysFromNow }
             },
             take: 5,
             orderBy: { expiryDate: 'asc' },
@@ -257,6 +258,28 @@ exports.getStaffDashboard = async (req, res) => {
             }))
         };
 
+        // My Earnings Snapshot
+        const currentYear = today.getFullYear();
+        const currentMonth = today.getMonth() + 1; // 1-indexed
+
+        const currentPayroll = await prisma.payroll.findFirst({
+            where: {
+                staffId,
+                month: currentMonth,
+                year: currentYear
+            }
+        });
+
+        const user = await prisma.user.findUnique({ where: { id: staffId } });
+        const baseSalary = user.baseSalary ? Number(user.baseSalary) : 20000;
+
+        const totalEarnings = currentPayroll ? Number(currentPayroll.amount) : baseSalary;
+        const myEarnings = {
+            total: totalEarnings,
+            status: currentPayroll ? currentPayroll.status : 'Estimated',
+            month: today.toLocaleString('default', { month: 'long' })
+        };
+
         res.json({
             checkinsToday,
             pendingPayments,
@@ -270,7 +293,8 @@ exports.getStaffDashboard = async (req, res) => {
             pendingActions,
             equipmentAlerts: formattedEquipmentAlerts.length > 0 ? formattedEquipmentAlerts : [/* fallback if needed via UI */],
             renewalAlerts,
-            checkins: formattedCheckins.length > 0 ? formattedCheckins : []
+            checkins: formattedCheckins.length > 0 ? formattedCheckins : [],
+            myEarnings
         });
     } catch (error) {
         console.error('Staff Dashboard Error:', error);
@@ -299,39 +323,61 @@ exports.getTrainerDashboard = async (req, res) => {
 
         const totalMembers = members.length;
 
-        // 2. Today's Schedule
+        // 2. Today's Schedule & Stats
         const today = new Date();
-        today.setHours(0, 0, 0, 0);
-        const tomorrow = new Date(today);
-        tomorrow.setDate(tomorrow.getDate() + 1);
+        const todayStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`; // Use local date components 
 
-        const classesToday = await prisma.class.findMany({
+        const allClasses = await prisma.class.findMany({
             where: {
                 tenantId,
                 trainerId,
-                // In a real app, you'd check a Schedule/Session model
             }
         });
+
+        // Filter for classes happening today based on the JSON schedule field
+        const todayClasses = allClasses.filter(c => {
+            if (!c.schedule) return false;
+            const sched = typeof c.schedule === 'string' ? JSON.parse(c.schedule) : c.schedule;
+            return sched.date === todayStr;
+        });
+
+        const sessionsTodayCount = todayClasses.length;
 
         // 3. Pending Plans (Members without workout or diet plan)
         const pendingPlans = members.filter(m => m.dietPlans.length === 0 || m.workoutPlans.length === 0).length;
 
-        // 4. Format Schedule for Frontend
-        const scheduleList = classesToday.map(c => ({
-            id: c.id,
-            time: '09:00 AM', // Mocked time as Class.schedule is Json
-            name: c.name,
-            type: 'Class',
-            status: 'Upcoming',
-            location: c.location || 'Main Floor'
-        }));
+        // 4. Format Schedule for Frontend - Try to extract time from schedule JSON
+        const scheduleList = todayClasses.map(c => {
+            let time = '09:00 AM';
+            try {
+                const sched = typeof c.schedule === 'string' ? JSON.parse(c.schedule) : c.schedule;
+                time = sched.time || time;
+            } catch (e) { }
+
+            return {
+                id: c.id,
+                time,
+                name: c.name,
+                type: 'Class',
+                status: c.status || 'Upcoming',
+                location: c.location || 'Main Floor'
+            };
+        });
+
+        const todaySessions = {
+            summary: {
+                total: sessionsTodayCount,
+                upcoming: todayClasses.filter(c => c.status !== 'Completed').length,
+                completed: todayClasses.filter(c => c.status === 'Completed').length
+            },
+            list: scheduleList
+        };
 
         // 5. My Clients with Progress
         const myClients = members.map(m => {
             const latestProgress = m.progress[0];
             let progressPercent = 0;
             if (latestProgress && m.targetWeight && latestProgress.weight) {
-                // If weight reduced towards target
                 const startWeight = m.progress[m.progress.length - 1]?.weight || latestProgress.weight;
                 const totalDiff = Math.abs(Number(startWeight) - Number(m.targetWeight));
                 const currentDiff = Math.abs(Number(startWeight) - Number(latestProgress.weight));
@@ -346,7 +392,7 @@ exports.getTrainerDashboard = async (req, res) => {
                 progress: progressPercent,
                 lastVisit: latestProgress ? new Date(latestProgress.date).toLocaleDateString() : 'N/A',
                 daysSinceLastVisit: latestProgress ? Math.floor((new Date() - new Date(latestProgress.date)) / (1000 * 60 * 60 * 24)) : 30,
-                membership: 'Premium',
+                membership: m.plan?.name || 'Premium',
                 phone: m.phone || 'N/A'
             };
         });
@@ -375,7 +421,7 @@ exports.getTrainerDashboard = async (req, res) => {
                 new Date(r.date).toDateString() === d.toDateString()
             );
             weeklySummary.push({
-                day: dayName.charAt(0), // Just M, T, W etc.
+                day: dayName.charAt(0),
                 status: record ? record.status : 'Off'
             });
         }
@@ -389,25 +435,61 @@ exports.getTrainerDashboard = async (req, res) => {
         const progressPendingCount = members.filter(m => m.progress.length === 0).length;
 
         const pendingTasks = [];
-        if (pendingDietPlansCount > 0) pendingTasks.push({ id: 1, title: 'Members need Diet Plans', count: pendingDietPlansCount, route: '/diet-plans', type: 'Diet' });
-        if (pendingWorkoutPlansCount > 0) pendingTasks.push({ id: 2, title: 'Members need Workout Plans', count: pendingWorkoutPlansCount, route: '/workout-plans', type: 'Workout' });
-        if (progressPendingCount > 0) pendingTasks.push({ id: 3, title: 'Progress Logs Pending', count: progressPendingCount, route: '/progress', type: 'Progress' });
+        if (pendingDietPlansCount > 0) pendingTasks.push({ id: 1, title: 'Members need Diet Plans', count: pendingDietPlansCount, route: '/trainer/diet/plans', type: 'Diet' });
+        if (pendingWorkoutPlansCount > 0) pendingTasks.push({ id: 2, title: 'Members need Workout Plans', count: pendingWorkoutPlansCount, route: '/trainer/workout/plans', type: 'Workout' });
+        if (progressPendingCount > 0) pendingTasks.push({ id: 3, title: 'Progress Logs Pending', count: progressPendingCount, route: '/trainer/progress', type: 'Progress' });
 
-        // 8. Earnings (Based on User.baseSalary)
+        // 8. Earnings 
+        const currentYear = today.getFullYear();
+        const currentMonth = today.getMonth() + 1;
+
+        const currentPayroll = await prisma.payroll.findFirst({
+            where: {
+                staffId: trainerId,
+                month: currentMonth,
+                year: currentYear
+            }
+        });
+
         const user = await prisma.user.findUnique({ where: { id: trainerId } });
-        const salary = user.baseSalary ? Number(user.baseSalary) : 20000;
-        const commission = totalMembers * 500; // Mocked commission: 500 per assigned member
+        const baseSalary = user?.baseSalary ? Number(user.baseSalary) : 20000;
+
+        const totalEarnings = currentPayroll ? Number(currentPayroll.amount) : baseSalary;
+        const incentives = currentPayroll ? Number(currentPayroll.incentives) : 0;
+        const deductions = currentPayroll ? Number(currentPayroll.deductions) : 0;
+
+        const announcements = await prisma.announcement.findMany({
+            where: {
+                AND: [
+                    {
+                        OR: [
+                            { tenantId: tenantId },
+                            { tenantId: null }
+                        ]
+                    },
+                    {
+                        OR: [
+                            { targetRole: { contains: 'all' } },
+                            { targetRole: { contains: 'trainer' } },
+                            { targetRole: { contains: 'Trainer' } }
+                        ]
+                    }
+                ]
+            },
+            orderBy: { createdAt: 'desc' },
+            take: 3
+        });
 
         res.json({
             isCommissionBased: true,
             totalMembers,
-            sessionsToday: classesToday.length,
+            sessionsToday: sessionsTodayCount,
             pendingPlans,
             todaySessions: {
                 summary: {
-                    total: classesToday.length,
-                    upcoming: classesToday.filter(c => c.status === 'Scheduled').length,
-                    completed: classesToday.filter(c => c.status === 'Completed').length
+                    total: sessionsTodayCount,
+                    upcoming: todayClasses.filter(c => c.status !== 'Completed').length,
+                    completed: todayClasses.filter(c => c.status === 'Completed').length
                 },
                 list: scheduleList
             },
@@ -421,12 +503,18 @@ exports.getTrainerDashboard = async (req, res) => {
                 weeklySummary
             },
             earnings: {
-                totalEarnings: salary + commission,
-                commission,
-                salary,
+                totalEarnings: totalEarnings,
+                commission: incentives,
+                salary: totalEarnings - incentives + deductions,
                 target: 60000,
-                pendingPayouts: commission
-            }
+                pendingPayouts: totalEarnings
+            },
+            announcements: announcements.map(a => ({
+                id: a.id,
+                title: a.title,
+                content: a.content,
+                date: new Date(a.createdAt).toLocaleDateString()
+            }))
         });
     } catch (error) {
         console.error('Trainer Dashboard Error:', error);

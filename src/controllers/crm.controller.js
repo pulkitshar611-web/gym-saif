@@ -13,7 +13,8 @@ const createLead = async (req, res) => {
         // Combine date and time to nextFollowUp
         let nextFollowUp = null;
         if (followUpDate) {
-            nextFollowUp = new Date(followUpDate);
+            const [year, month, day] = followUpDate.split('-');
+            nextFollowUp = new Date(year, month - 1, day);
             if (followUpTime) {
                 const [hours, minutes] = followUpTime.split(':');
                 nextFollowUp.setHours(hours, minutes);
@@ -175,7 +176,7 @@ const getTodayFollowUps = async (req, res) => {
                     gte: startOfDay,
                     lte: endOfDay
                 },
-                status: { notIn: ['Converted', 'Lost'] }
+                status: { notIn: ['Converted', 'Lost', 'Contacted'] }
             },
             include: {
                 assignedTo: { select: { id: true, name: true } }
@@ -193,11 +194,17 @@ const addFollowUp = async (req, res) => {
         const { leadId } = req.params;
         const { notes, nextDate, status } = req.body;
 
+        let parsedNextDate = null;
+        if (nextDate) {
+            const dateParts = nextDate.split('T')[0].split('-');
+            parsedNextDate = new Date(dateParts[0], dateParts[1] - 1, dateParts[2]);
+        }
+
         const followUp = await prisma.followUp.create({
             data: {
                 leadId: parseInt(leadId),
                 notes,
-                nextDate: nextDate ? new Date(nextDate) : null,
+                nextDate: parsedNextDate,
                 status: status || 'Completed'
             }
         });
@@ -206,7 +213,7 @@ const addFollowUp = async (req, res) => {
         await prisma.lead.update({
             where: { id: parseInt(leadId) },
             data: {
-                nextFollowUp: nextDate ? new Date(nextDate) : null,
+                nextFollowUp: parsedNextDate,
                 updatedAt: new Date()
             }
         });

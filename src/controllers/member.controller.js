@@ -107,15 +107,89 @@ const createBooking = async (req, res) => {
         const member = await prisma.member.findUnique({ where: { userId: req.user.id } });
         if (!member) return res.status(404).json({ message: 'Member profile not found' });
 
+        const targetDate = new Date(date);
+
+        // Find Class and Trainer
+        const classDetails = await prisma.class.findUnique({
+            where: { id: parseInt(classId) },
+            include: { trainer: true }
+        });
+
+        if (!classDetails || !classDetails.trainerId) {
+            return res.status(404).json({ message: 'Class or Trainer not found' });
+        }
+
+        // 1. Check if trainer is on approved leave
+        const overlappingLeave = await prisma.leaveRequest.findFirst({
+            where: {
+                userId: classDetails.trainerId,
+                status: 'Approved',
+                startDate: { lte: targetDate },
+                endDate: { gte: targetDate }
+            }
+        });
+
+        if (overlappingLeave) {
+            return res.status(400).json({ message: 'Trainer is unavailable on this date (Time Off)' });
+        }
+
+        // 2. Fetch Trainer Availability & Preferences
+        const trainerAvailability = await prisma.trainerAvailability.findUnique({
+            where: { trainerId: classDetails.trainerId }
+        });
+
+        let bookingStatus = 'Upcoming'; // Default status
+        if (trainerAvailability) {
+            // A. Weekly Schedule Check
+            const schedule = typeof trainerAvailability.weeklySchedule === 'string'
+                ? JSON.parse(trainerAvailability.weeklySchedule)
+                : (trainerAvailability.weeklySchedule || []);
+
+            const dayName = targetDate.toLocaleDateString('en-US', { weekday: 'long' });
+            const daySchedule = schedule.find(s => s.day === dayName);
+
+            if (!daySchedule || !daySchedule.slots || daySchedule.slots.length === 0) {
+                return res.status(400).json({ message: `Trainer is not available on ${dayName}s` });
+            }
+
+            // B. Booking Preferences (Approval Logic)
+            const prefs = typeof trainerAvailability.preferences === 'string'
+                ? JSON.parse(trainerAvailability.preferences)
+                : (trainerAvailability.preferences || {});
+
+            if (prefs.requireApproval) {
+                bookingStatus = 'Pending';
+
+                // C. Returning Client Exception
+                if (prefs.autoAcceptReturning) {
+                    const pastSession = await prisma.booking.findFirst({
+                        where: {
+                            memberId: member.id,
+                            class: { trainerId: classDetails.trainerId },
+                            status: 'Completed'
+                        }
+                    });
+                    if (pastSession) {
+                        bookingStatus = 'Upcoming';
+                    }
+                }
+            }
+        }
+
         const booking = await prisma.booking.create({
             data: {
                 memberId: member.id,
                 classId: parseInt(classId),
-                date: new Date(date),
-                status: 'Upcoming'
+                date: targetDate,
+                status: bookingStatus
             }
         });
-        res.json(booking);
+
+        const msg = bookingStatus === 'Pending'
+            ? 'Booking requested! Waiting for trainer approval.'
+            : 'Booking confirmed!';
+
+        res.json({ success: true, message: msg, data: booking });
     } catch (error) {
         res.status(500).json({ message: error.message });
     }
