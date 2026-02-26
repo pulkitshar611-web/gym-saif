@@ -239,9 +239,47 @@ const updateMember = async (req, res) => {
 const deleteMember = async (req, res) => {
     try {
         const { id } = req.params;
-        await prisma.member.delete({ where: { id: parseInt(id) } });
-        res.json({ message: 'Member deleted successfully' });
+        const memberId = parseInt(id);
+
+        // Pre-fetch wallet and store orders to delete their nested relations first
+        const wallet = await prisma.wallet.findUnique({ where: { memberId } });
+        const orders = await prisma.storeOrder.findMany({ where: { memberId }, select: { id: true } });
+        const orderIds = orders.map(o => o.id);
+
+        const transactionOperations = [];
+
+        // 1. Delete deeply nested items
+        if (wallet) {
+            transactionOperations.push(prisma.transaction.deleteMany({ where: { walletId: wallet.id } }));
+        }
+        if (orderIds.length > 0) {
+            transactionOperations.push(prisma.storeOrderItem.deleteMany({ where: { orderId: { in: orderIds } } }));
+        }
+
+        // 2. Delete direct member relations
+        transactionOperations.push(
+            prisma.booking.deleteMany({ where: { memberId } }),
+            prisma.memberProgress.deleteMany({ where: { memberId } }),
+            prisma.reward.deleteMany({ where: { memberId } }),
+            prisma.feedback.deleteMany({ where: { memberId } }),
+            prisma.dietPlan.deleteMany({ where: { clientId: memberId } }), // uses clientId
+            prisma.workoutPlan.deleteMany({ where: { clientId: memberId } }), // uses clientId
+            prisma.serviceRequest.deleteMany({ where: { memberId } }),
+            prisma.message.deleteMany({ where: { memberId } }), // uses memberId
+            prisma.storeOrder.deleteMany({ where: { memberId } }),
+            prisma.invoice.deleteMany({ where: { memberId } }),
+            prisma.wallet.deleteMany({ where: { memberId } }),
+            
+            // 3. Delete the member
+            prisma.member.delete({ where: { id: memberId } })
+        );
+
+        // Execute all operations in a single transaction
+        await prisma.$transaction(transactionOperations);
+
+        res.json({ message: 'Member and all related records deleted successfully' });
     } catch (error) {
+        console.error('Delete member error:', error);
         res.status(500).json({ message: error.message });
     }
 };
@@ -1477,10 +1515,18 @@ const getTenantSettings = async (req, res) => {
         }
 
         res.json({
-            siteName: tenant.name || '',
-            contactAddress: tenant.location || '',
-            contactPhone: tenant.phone || '',
-            supportEmail: tenant.email || '',
+            id: settings.id,
+            tenantId: tenant.id,
+            name: tenant.name || '',
+            address: tenant.location || '',
+            phone: tenant.phone || '',
+            email: tenant.email || '',
+            logoUrl: settings.logo || '',
+            timezone: settings.timezone || 'UTC',
+            currency: settings.currency || 'USD',
+            whatsappEnabled: settings.whatsappEnabled || false,
+            openingHours: settings.openingHours || '',
+            wifiPassword: settings.wifiPassword || '',
             ...settings
         });
     } catch (error) {
@@ -1491,31 +1537,53 @@ const getTenantSettings = async (req, res) => {
 const updateTenantSettings = async (req, res) => {
     try {
         const { tenantId } = req.user;
-        const { siteName, contactAddress, contactPhone, supportEmail, ...otherSettings } = req.body;
+        const { name, address, phone, email, logoUrl, timezone, currency, openingHours, wifiPassword, whatsappEnabled, ...otherSettings } = req.body;
 
         // Update Tenant Table
         const updatedTenant = await prisma.tenant.update({
             where: { id: tenantId },
             data: {
-                name: siteName,
-                location: contactAddress,
-                phone: contactPhone,
-                email: supportEmail
+                name: name,
+                location: address,
+                phone: phone,
+                email: email
             }
         });
 
         // Update TenantSettings Table
-        const updatedSettings = await prisma.tenantSettings.update({
+        const updatedSettings = await prisma.tenantSettings.upsert({
             where: { tenantId },
-            data: otherSettings
+            update: {
+                logo: logoUrl,
+                timezone,
+                currency,
+                openingHours,
+                wifiPassword,
+                whatsappEnabled
+                // other settings can be added here if needed
+            },
+            create: {
+                tenantId,
+                logo: logoUrl,
+                timezone,
+                currency,
+                openingHours,
+                wifiPassword,
+                whatsappEnabled
+            }
         });
 
         res.json({
-            siteName: updatedTenant.name,
-            contactAddress: updatedTenant.location,
-            contactPhone: updatedTenant.phone,
-            supportEmail: updatedTenant.email,
-            ...updatedSettings
+            message: 'Settings updated successfully',
+            name: updatedTenant.name,
+            address: updatedTenant.location,
+            phone: updatedTenant.phone,
+            email: updatedTenant.email,
+            logoUrl: updatedSettings.logo,
+            timezone: updatedSettings.timezone,
+            currency: updatedSettings.currency,
+            openingHours: updatedSettings.openingHours,
+            wifiPassword: updatedSettings.wifiPassword
         });
     } catch (error) {
         res.status(500).json({ message: error.message });

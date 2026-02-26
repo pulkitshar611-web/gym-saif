@@ -605,6 +605,8 @@ model TenantSettings {
   timezone        String  @default("UTC")
   currency        String  @default("USD")
   whatsappEnabled Boolean @default(false)
+  openingHours    String?
+  wifiPassword    String?
 
   // Developer & Integration Settings
   webhooks           Json? // { payment: '', whatsapp: '', attendance: '', secret: '' }
