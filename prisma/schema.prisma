@@ -102,7 +102,7 @@ model User {
   trainerDietPlans      DietPlan[]           @relation("TrainerDietPlan")
   trainerWorkoutPlans   WorkoutPlan[]        @relation("TrainerWorkoutPlan")
   member                Member[]             @relation("UserToMember")
-  conversations        Conversation[]       @relation("UserConversations")
+  conversations        Conversation[]       @relation("userconversations")
   sentMessages         ChatMessage[]        @relation("SentMessages")
 
   @@map("user")
@@ -821,7 +821,7 @@ model Conversation {
   id           String        @id @default(uuid())
   tenantId     Int?          // Optional: if null, it's a cross-tenant chat (e.g. Superadmin to Branch Admin)
   tenant       Tenant?       @relation(fields: [tenantId], references: [id])
-  participants User[]        @relation("UserConversations")
+  participants User[]        @relation("userconversations")
   messages     ChatMessage[]
   lastMessage  String?       @db.Text
   updatedAt    DateTime      @updatedAt
