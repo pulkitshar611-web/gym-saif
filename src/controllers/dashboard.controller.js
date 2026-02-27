@@ -544,12 +544,41 @@ exports.getMemberDashboard = async (req, res) => {
             return res.status(404).json({ message: 'Member profile not found' });
         }
 
-        // 2. Attendance Stats (Simplified logic)
+        // 2. Attendance Stats (Lifetime)
         const totalBookings = await prisma.booking.count({
             where: { memberId: member.id }
         });
         const completedBookings = member.bookings.filter(b => b.status === 'Completed').length;
         const attendanceRate = totalBookings > 0 ? Math.round((completedBookings / totalBookings) * 100) : 0;
+
+        // 2b. Weekly Stats (Current Week: Mon-Sun)
+        const nowDate = new Date();
+        const dayOfWeek = nowDate.getDay(); // 0=Sun, 1=Mon...
+        const diffToMonday = (dayOfWeek === 0 ? -6 : 1 - dayOfWeek);
+        const weekStart = new Date(nowDate);
+        weekStart.setDate(nowDate.getDate() + diffToMonday);
+        weekStart.setHours(0, 0, 0, 0);
+        const weekEnd = new Date(weekStart);
+        weekEnd.setDate(weekStart.getDate() + 7);
+
+        const weeklyCompleted = await prisma.booking.count({
+            where: {
+                memberId: member.id,
+                status: 'Completed',
+                date: { gte: weekStart, lt: weekEnd }
+            }
+        }).catch(() => 0);
+
+        // Weekly target: from plan metadata or default 7 sessions/week
+        const planMeta = member.plan?.metadata ? (typeof member.plan.metadata === 'string' ? JSON.parse(member.plan.metadata) : member.plan.metadata) : {};
+        const weeklyTarget = planMeta.weekly_sessions || member.plan?.weeklyTarget || 7;
+
+        // Last Store Order
+        const lastOrder = await prisma.storeOrder.findFirst({
+            where: { memberId: member.id },
+            orderBy: { createdAt: 'desc' },
+            select: { id: true, status: true, total: true, createdAt: true }
+        }).catch(() => null);
 
         // 3. Benefits (from Plan)
         const benefits = member.plan?.benefits || [];
@@ -588,13 +617,19 @@ exports.getMemberDashboard = async (req, res) => {
             nextClass,
             attendanceRate: `${attendanceRate}%`,
             planSummary: {
-                workoutsCompleted: completedBookings,
-                totalWorkouts: totalBookings || 20,
-                nextGoal: member.fitnessGoal || 'Complete Week 1',
+                workoutsCompleted: weeklyCompleted,
+                totalWorkouts: weeklyTarget,
+                nextGoal: member.fitnessGoal || 'Weight Loss & Muscle Gain',
                 membershipStatus: member.status,
                 expiryDate: member.expiryDate ? new Date(member.expiryDate).toLocaleDateString() : 'N/A',
                 daysRemaining: daysRemaining
             },
+            lastOrder: lastOrder ? {
+                id: lastOrder.id,
+                status: lastOrder.status || 'Processing',
+                amount: Number(lastOrder.total || 0),
+                date: new Date(lastOrder.createdAt).toLocaleDateString()
+            } : null,
             announcements: announcements.map(a => ({
                 id: a.id,
                 title: a.title,

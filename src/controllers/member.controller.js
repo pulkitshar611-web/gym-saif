@@ -4,8 +4,35 @@ const prisma = require('../config/prisma');
 const upgradePlan = async (req, res) => {
     try {
         const { newPlan } = req.body;
-        // In a real implementation this would find the membership plan, calculate prorated amounts, create an invoice etc
-        res.json({ message: 'Plan upgraded successfully', newPlan });
+        if (!newPlan) return res.status(400).json({ message: 'Plan name is required' });
+
+        const member = await prisma.member.findUnique({ where: { userId: req.user.id } });
+        if (!member) return res.status(404).json({ message: 'Member profile not found' });
+
+        // Find the plan by name in the same tenant
+        const plan = await prisma.membershipPlan.findFirst({
+            where: { tenantId: member.tenantId, name: newPlan, status: 'Active' }
+        });
+
+        if (!plan) return res.status(404).json({ message: `Plan '${newPlan}' not found` });
+
+        // Calculate new expiry: extend from today by plan duration
+        const now = new Date();
+        let newExpiry = new Date(now);
+        if (plan.durationType === 'Months') {
+            newExpiry.setMonth(newExpiry.getMonth() + plan.duration);
+        } else if (plan.durationType === 'Years') {
+            newExpiry.setFullYear(newExpiry.getFullYear() + plan.duration);
+        } else {
+            newExpiry.setDate(newExpiry.getDate() + plan.duration);
+        }
+
+        await prisma.member.update({
+            where: { id: member.id },
+            data: { planId: plan.id, expiryDate: newExpiry, status: 'Active' }
+        });
+
+        res.json({ message: 'Plan upgraded successfully', newPlan: plan.name, expiryDate: newExpiry.toLocaleDateString() });
     } catch (error) {
         res.status(500).json({ message: error.message });
     }
@@ -232,6 +259,18 @@ const rescheduleBooking = async (req, res) => {
 
 const freezeMembership = async (req, res) => {
     try {
+        const member = await prisma.member.findUnique({ where: { userId: req.user.id } });
+        if (!member) return res.status(404).json({ message: 'Member profile not found' });
+
+        if (member.status === 'Frozen') {
+            return res.status(400).json({ message: 'Membership is already frozen' });
+        }
+
+        await prisma.member.update({
+            where: { id: member.id },
+            data: { status: 'Frozen' }
+        });
+
         res.json({ message: 'Membership frozen successfully' });
     } catch (error) {
         res.status(500).json({ message: error.message });
@@ -240,6 +279,18 @@ const freezeMembership = async (req, res) => {
 
 const unfreezeMembership = async (req, res) => {
     try {
+        const member = await prisma.member.findUnique({ where: { userId: req.user.id } });
+        if (!member) return res.status(404).json({ message: 'Member profile not found' });
+
+        if (member.status !== 'Frozen') {
+            return res.status(400).json({ message: 'Membership is not currently frozen' });
+        }
+
+        await prisma.member.update({
+            where: { id: member.id },
+            data: { status: 'Active' }
+        });
+
         res.json({ message: 'Membership unfrozen successfully' });
     } catch (error) {
         res.status(500).json({ message: error.message });

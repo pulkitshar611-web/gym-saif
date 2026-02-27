@@ -263,6 +263,7 @@ model Member {
   targetBodyFat  Decimal? @db.Decimal(5, 2)
   emergencyName  String?
   emergencyPhone String?
+  height         Decimal? @db.Decimal(5, 2)
 
   bookings Booking[]
   wallet   Wallet?
@@ -575,6 +576,7 @@ model MemberProgress {
   measurements Json?
   photos       Json?
   notes        String?
+  height       Decimal? @db.Decimal(5, 2)
   date         DateTime @default(now())
 
   @@map("memberprogress")
