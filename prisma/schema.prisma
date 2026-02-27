@@ -57,6 +57,7 @@ model Tenant {
   serviceRequests       ServiceRequest[]
   amenities             Amenity[]
   promoCodes            PromoCode[]
+  messages              Message[]
 
   @@map("tenant")
 }
@@ -101,6 +102,7 @@ model User {
   trainerDietPlans      DietPlan[]           @relation("TrainerDietPlan")
   trainerWorkoutPlans   WorkoutPlan[]        @relation("TrainerWorkoutPlan")
   member                Member[]             @relation("UserToMember")
+  trainerMessages       Message[]            @relation("TrainerMessages")
 
   @@map("user")
 }
@@ -247,6 +249,8 @@ model Member {
   joinDate   DateTime        @default(now())
   expiryDate DateTime?
   status     String          @default("Active") // Active, Expired, Inactive
+  isFlagged  Boolean         @default(false)
+  flagReason String?         @db.Text
 
   trainerId Int?
   trainer   User? @relation("TrainerToMember", fields: [trainerId], references: [id])
@@ -267,6 +271,7 @@ model Member {
   dietPlans DietPlan[]
   workoutPlans WorkoutPlan[]
   serviceRequests ServiceRequest[]
+  messages Message[] @relation("MemberMessages")
 
   cards          Json?
 
@@ -806,4 +811,20 @@ model PromoCode {
   updatedAt   DateTime  @updatedAt
 
   @@map("promo_code")
+}
+
+model Message {
+  id         Int      @id @default(autoincrement())
+  tenantId   Int
+  tenant     Tenant   @relation(fields: [tenantId], references: [id])
+  trainerId  Int
+  trainer    User     @relation("TrainerMessages", fields: [trainerId], references: [id])
+  memberId   Int
+  member     Member   @relation("MemberMessages", fields: [memberId], references: [id])
+  senderType String   // 'TRAINER' or 'MEMBER'
+  content    String   @db.Text
+  isRead     Boolean  @default(false)
+  createdAt  DateTime @default(now())
+
+  @@map("message")
 }
