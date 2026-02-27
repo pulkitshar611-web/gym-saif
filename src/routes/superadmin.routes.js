@@ -50,7 +50,8 @@ const {
     updateStaffMember,
     addDevice,
     updateDevice,
-    deleteDevice
+    deleteDevice,
+    getMySubscription
 } = require('../controllers/superadmin.controller');
 const { protect, authorize } = require('../middleware/auth.middleware');
 const { checkSaaSLimit } = require('../middleware/saas.middleware');
@@ -61,6 +62,7 @@ router.use(protect);
 
 // Gyms - Allow both Superadmin and Branch Admin (Branch Admin filtered in controller)
 router.get('/gyms', authorize('SUPER_ADMIN', 'BRANCH_ADMIN', 'MANAGER'), getAllGyms);
+router.get('/my-subscription', authorize('BRANCH_ADMIN', 'MANAGER'), getMySubscription);
 router.post('/gyms', authorize('SUPER_ADMIN', 'BRANCH_ADMIN'), checkSaaSLimit('branches'), addGym);
 router.patch('/gyms/:id', authorize('SUPER_ADMIN', 'BRANCH_ADMIN'), updateGym);
 router.delete('/gyms/:id', authorize('SUPER_ADMIN', 'BRANCH_ADMIN'), deleteGym);

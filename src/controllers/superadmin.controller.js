@@ -275,24 +275,92 @@ const deletePlan = async (req, res) => {
 
 const fetchDashboardCards = async (req, res) => {
     try {
+        const now = new Date();
+        const startOfCurrentMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+        const startOfPreviousMonth = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+        const endOfPreviousMonth = new Date(now.getFullYear(), now.getMonth(), 0, 23, 59, 59);
+
+        // --- TOTAL GYMS ---
         const totalGyms = await prisma.tenant.count();
-        const totalMembers = await prisma.user.count({ where: { role: 'MEMBER' } });
+        const gymsThisMonth = await prisma.tenant.count({
+            where: { createdAt: { gte: startOfCurrentMonth } }
+        });
+        const gymsTrend = `+${gymsThisMonth} this month`;
+
+        // --- TOTAL MEMBERS ---
+        const totalMembers = await prisma.member.count();
+        const membersThisMonth = await prisma.member.count({
+            where: { joinDate: { gte: startOfCurrentMonth } }
+        });
+        const membersLastMonth = await prisma.member.count({
+            where: { joinDate: { gte: startOfPreviousMonth, lte: endOfPreviousMonth } }
+        });
+        let membersTrend = "0% vs last month";
+        if (membersLastMonth > 0) {
+            const pct = Math.round(((membersThisMonth - membersLastMonth) / membersLastMonth) * 100);
+            membersTrend = pct >= 0 ? `+${pct}% vs last month` : `${pct}% vs last month`;
+        } else if (membersThisMonth > 0) {
+            membersTrend = "100% vs last month";
+        }
+
+        // --- ACTIVE PLANS (Subscriptions) ---
         const activeSubs = await prisma.subscription.count({ where: { status: 'Active' } });
-        const totalRevenue = await prisma.saasPayment.aggregate({
-            _sum: { amount: true },
-            where: { status: 'Success' }
+        const subsThisMonth = await prisma.subscription.count({
+            where: {
+                status: 'Active',
+                startDate: { gte: startOfCurrentMonth }
+            }
+        });
+        const subsLastMonth = await prisma.subscription.count({
+            where: {
+                status: 'Active',
+                startDate: { gte: startOfPreviousMonth, lte: endOfPreviousMonth }
+            }
         });
 
-        // Simple growth rate logic: compare current month with previous (simulated for now with 10% base)
-        const revenueValue = totalRevenue._sum.amount ? parseFloat(totalRevenue._sum.amount) : 0;
+        let subsTrend = "0% growth";
+        if (subsLastMonth > 0) {
+            const pct = Math.round(((subsThisMonth - subsLastMonth) / subsLastMonth) * 100);
+            subsTrend = pct >= 0 ? `+${pct}% growth` : `${pct}% growth`;
+        } else if (subsThisMonth > 0) {
+            subsTrend = "+100% growth";
+        }
+
+        // --- MONTHLY REVENUE ---
+        const currentMonthRevenue = await prisma.saasPayment.aggregate({
+            _sum: { amount: true },
+            where: {
+                status: 'Success',
+                date: { gte: startOfCurrentMonth }
+            }
+        });
+        const lastMonthRevenue = await prisma.saasPayment.aggregate({
+            _sum: { amount: true },
+            where: {
+                status: 'Success',
+                date: { gte: startOfPreviousMonth, lte: endOfPreviousMonth }
+            }
+        });
+
+        const revCurrent = currentMonthRevenue._sum.amount ? parseFloat(currentMonthRevenue._sum.amount) : 0;
+        const revLast = lastMonthRevenue._sum.amount ? parseFloat(lastMonthRevenue._sum.amount) : 0;
+
+        let revTrend = "0% vs last month";
+        if (revLast > 0) {
+            const pct = Math.round(((revCurrent - revLast) / revLast) * 100);
+            revTrend = pct >= 0 ? `+${pct}% vs last month` : `${pct}% vs last month`;
+        } else if (revCurrent > 0) {
+            revTrend = "+100% vs last month";
+        }
 
         res.json([
-            { id: 1, title: 'Total Gyms', value: totalGyms.toString(), trend: '+2 this month', color: 'primary' },
-            { id: 2, title: 'Total Members', value: totalMembers.toLocaleString(), trend: '+15% vs last month', color: 'success' },
-            { id: 3, title: 'Active Plans', value: activeSubs.toString(), trend: '85% retention', color: 'warning' },
-            { id: 4, title: 'Monthly Revenue', value: `₹${revenueValue.toLocaleString()}`, trend: '+8% vs last month', color: 'success' }
+            { id: 1, title: 'Total Gyms', value: totalGyms.toString(), trend: gymsTrend, color: 'primary' },
+            { id: 2, title: 'Total Members', value: totalMembers.toLocaleString(), trend: membersTrend, color: 'success' },
+            { id: 3, title: 'Active Plans', value: activeSubs.toString(), trend: subsTrend, color: 'warning' },
+            { id: 4, title: 'Monthly Revenue', value: `₹${revCurrent.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`, trend: revTrend, color: 'success' }
         ]);
     } catch (error) {
+        console.error("Dashboard Stats Error:", error);
         res.status(500).json({ message: error.message });
     }
 };
@@ -1114,6 +1182,29 @@ const updateProfile = async (req, res) => {
     }
 };
 
+const getMySubscription = async (req, res) => {
+    try {
+        const { tenantId } = req.user;
+        if (!tenantId) return res.status(400).json({ message: 'No tenant associated with user' });
+
+        const subscription = await prisma.subscription.findFirst({
+            where: { tenantId, status: 'Active' }
+        });
+
+        if (!subscription) {
+            return res.status(404).json({ message: 'No active subscription found' });
+        }
+
+        const plan = await prisma.saaSPlan.findUnique({
+            where: { id: subscription.planId }
+        });
+
+        res.json({ subscription, plan });
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+
 module.exports = {
     getAllGyms,
     addGym,
@@ -1136,7 +1227,11 @@ module.exports = {
     getActivityLogs,
     getErrorLogs,
     getHardwareLogs,
+    getGSTReports,
     getDevices,
+    addDevice,
+    updateDevice,
+    deleteDevice,
     getGlobalSettings,
     updateGlobalSettings,
     getInvoiceSettings,
@@ -1146,23 +1241,20 @@ module.exports = {
     getStaffMembers,
     addStaffMember,
     deleteStaffMember,
+    updateStaffMember,
     getWalletStats,
-    getTrainerRequests,
-    getTrainerChangeRequests,
-    getPayrollData,
-    getStoreDashboardData,
-    getProducts,
-    getOrders,
-    getStoreInventory,
-    getInvoices,
-    getGSTReports,
-    getProfile,
-    updateProfile,
-    updateTrainerRequest,
     getMemberWallets,
     updateMemberWallet,
-    updateStaffMember,
-    addDevice,
-    updateDevice,
-    deleteDevice
+    getTrainerRequests,
+    getTrainerChangeRequests,
+    updateTrainerRequest,
+    getPayrollData: async (req, res) => res.json([]), // Placeholder
+    getStoreDashboardData: async (req, res) => res.json({}), // Placeholder
+    getProducts: async (req, res) => res.json([]), // Placeholder
+    getOrders: async (req, res) => res.json([]), // Placeholder
+    getStoreInventory: async (req, res) => res.json([]), // Placeholder
+    getInvoices,
+    getProfile,
+    updateProfile,
+    getMySubscription
 };

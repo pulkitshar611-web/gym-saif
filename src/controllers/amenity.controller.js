@@ -33,6 +33,49 @@ const addAmenity = async (req, res) => {
             return res.status(403).json({ message: 'Tenant ID required' });
         }
 
+        // --- SaaS Limit Check ---
+        if (role !== 'SUPER_ADMIN') {
+            const subscription = await prisma.subscription.findFirst({
+                where: { tenantId, status: 'Active' }
+            });
+
+            if (subscription) {
+                const plan = await prisma.saaSPlan.findUnique({
+                    where: { id: subscription.planId }
+                });
+
+                if (plan) {
+                    // Check item count limit
+                    const limits = plan.limits || {};
+                    const amenityLimit = limits.amenities || { value: 99, isUnlimited: true };
+
+                    if (!amenityLimit.isUnlimited) {
+                        const currentCount = await prisma.amenity.count({ where: { tenantId } });
+                        if (currentCount >= parseInt(amenityLimit.value)) {
+                            return res.status(403).json({
+                                message: `Amenity limit reached. Your ${plan.name} allows up to ${amenityLimit.value} amenities.`,
+                                limitReached: true
+                            });
+                        }
+                    }
+
+                    // Check if specific name is allowed (if benefits list is defined by Super Admin)
+                    const allowedBenefits = plan.benefits; // This is a Json array of benefit objects
+                    if (Array.isArray(allowedBenefits) && allowedBenefits.length > 0) {
+                        const isAllowed = allowedBenefits.some(b =>
+                            b.name.toLowerCase() === name.toLowerCase()
+                        );
+                        if (!isAllowed) {
+                            return res.status(403).json({
+                                message: `"${name}" is not included in your current SaaS Plan (${plan.name}). Please upgrade to offer this benefit.`,
+                                allowedBenefits: allowedBenefits.map(b => b.name)
+                            });
+                        }
+                    }
+                }
+            }
+        }
+
         const amenity = await prisma.amenity.create({
             data: {
                 tenantId: tenantId,

@@ -1144,14 +1144,17 @@ const deleteClass = async (req, res) => {
 };
 
 // --- COMMUNICATION ---
+const { getIO } = require('../utils/socket');
 
 const getAnnouncements = async (req, res) => {
     try {
-        const announcements = [
-            { id: 1, title: 'Gym Maintenance this Sunday', message: 'The gym will be closed for maintenance from 10 AM to 4 PM this Sunday. We apologize for the inconvenience.', audience: 'All Members', status: 'Scheduled', date: '2024-02-25 09:00 AM', author: 'Admin' },
-            { id: 2, title: 'New Zumba Classes!', message: 'We are excited to announce new Zumba batches starting next week. Register now at the front desk!', audience: 'Active Members', status: 'Posted', date: '2024-02-20 10:30 AM', author: 'Sarah Manager' },
-            { id: 3, title: 'Staff Meeting Reminder', message: 'Monthly staff meeting is scheduled for tomorrow at 2 PM in the conference room.', audience: 'Staff', status: 'Posted', date: '2024-02-18 05:00 PM', author: 'Admin' }
-        ];
+        const { tenantId, role } = req.user;
+        const where = role === 'SUPER_ADMIN' ? {} : { tenantId };
+        const announcements = await prisma.announcement.findMany({
+            where,
+            include: { author: { select: { name: true } } },
+            orderBy: { createdAt: 'desc' }
+        });
         res.json(announcements);
     } catch (error) {
         res.status(500).json({ message: error.message });
@@ -1160,7 +1163,18 @@ const getAnnouncements = async (req, res) => {
 
 const createAnnouncement = async (req, res) => {
     try {
-        const newAnnouncement = { ...req.body, id: Date.now(), author: 'Current User' };
+        const { tenantId, id: authorId } = req.user;
+        const { title, content, priority, targetRole } = req.body;
+        const newAnnouncement = await prisma.announcement.create({
+            data: {
+                tenantId,
+                authorId,
+                title,
+                content,
+                priority: priority || 'medium',
+                targetRole: targetRole || 'all'
+            }
+        });
         res.json({ message: 'Announcement created successfully', announcement: newAnnouncement });
     } catch (error) {
         res.status(500).json({ message: error.message });
@@ -1169,11 +1183,34 @@ const createAnnouncement = async (req, res) => {
 
 const getChats = async (req, res) => {
     try {
-        const chats = [
-            { id: 1, name: 'Rahul Sharma', lastMsg: 'I will be there at 6 AM tomorrow.', time: '10:30 AM', unread: 2, status: 'online', avatar: 'R' },
-            { id: 2, name: 'Vikram Singh', lastMsg: 'Can you freeze my membership?', time: '09:15 AM', unread: 0, status: 'away', avatar: 'V' }
-        ];
-        res.json(chats);
+        const { id: userId } = req.user;
+        const conversations = await prisma.conversation.findMany({
+            where: {
+                participants: { some: { id: userId } }
+            },
+            include: {
+                participants: {
+                    where: { id: { not: userId } },
+                    select: { id: true, name: true, role: true, avatar: true }
+                }
+            },
+            orderBy: { updatedAt: 'desc' }
+        });
+
+        // Format for frontend
+        const formatted = conversations.map(c => ({
+            id: c.id,
+            name: c.participants[0]?.name || 'Unknown',
+            role: c.participants[0]?.role || 'N/A',
+            lastMsg: c.lastMessage || 'Start a conversation...',
+            time: c.updatedAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+            unread: 0, // In real world, we would track unread count
+            status: 'offline', // Placeholder
+            avatar: c.participants[0]?.avatar || (c.participants[0]?.name || 'U').charAt(0),
+            receiverId: c.participants[0]?.id
+        }));
+
+        res.json(formatted);
     } catch (error) {
         res.status(500).json({ message: error.message });
     }
@@ -1181,12 +1218,21 @@ const getChats = async (req, res) => {
 
 const getMessages = async (req, res) => {
     try {
-        const messages = [
-            { id: 1, text: 'Hi, just a reminder about your session tomorrow.', time: '09:00 AM', sender: 'me', status: 'read' },
-            { id: 2, text: 'I will be there at 6 AM tomorrow. Is that okay?', time: '10:30 AM', sender: 'them', status: 'received' },
-            { id: 3, text: 'Perfect. See you at the gym!', time: '10:35 AM', sender: 'me', status: 'sent' }
-        ];
-        res.json(messages);
+        const { id: conversationId } = req.params;
+        const messages = await prisma.chatMessage.findMany({
+            where: { conversationId },
+            orderBy: { createdAt: 'asc' }
+        });
+
+        const formatted = messages.map(m => ({
+            id: m.id,
+            text: m.content,
+            time: m.createdAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+            senderId: m.senderId,
+            sentBy: m.senderId === req.user.id ? 'staff' : 'member' // staff = me, member = them in frontend context
+        }));
+
+        res.json(formatted);
     } catch (error) {
         res.status(500).json({ message: error.message });
     }
@@ -1194,36 +1240,112 @@ const getMessages = async (req, res) => {
 
 const sendMessage = async (req, res) => {
     try {
-        res.json({ success: true, message: 'Message sent' });
+        const { id: userId, tenantId } = req.user;
+        const { id: routeId } = req.params;
+        const { receiverId, text, conversationId: bodyId } = req.body;
+
+        // If the route passes 'new', it means we don't have a conversation ID yet
+        let conversationId = (routeId !== 'new' && routeId !== 'undefined' && routeId) ? routeId : bodyId;
+
+        if (!conversationId && receiverId) {
+            // Find or create conversation
+            const existingConv = await prisma.conversation.findFirst({
+                where: {
+                    participants: {
+                        every: { id: { in: [userId, parseInt(receiverId)] } }
+                    }
+                }
+            });
+
+            if (existingConv) {
+                conversationId = existingConv.id;
+            } else {
+                const newConv = await prisma.conversation.create({
+                    data: {
+                        tenantId: tenantId || null,
+                        participants: {
+                            connect: [{ id: parseInt(userId) }, { id: parseInt(receiverId) }]
+                        }
+                    }
+                });
+                conversationId = newConv.id;
+            }
+        }
+
+        if (!conversationId) {
+            return res.status(400).json({ message: 'Conversation or Receiver ID required' });
+        }
+
+        const message = await prisma.chatMessage.create({
+            data: {
+                conversationId: conversationId,
+                senderId: parseInt(userId),
+                content: text
+            }
+        });
+
+        await prisma.conversation.update({
+            where: { id: conversationId },
+            data: { lastMessage: text }
+        });
+
+        // Emit Socket.io event
+        const io = getIO();
+        const receiver = await prisma.conversation.findUnique({
+            where: { id: conversationId },
+            include: { participants: { where: { id: { not: userId } } } }
+        });
+
+        const targetId = receiver.participants[0]?.id;
+        if (targetId) {
+            io.to(targetId.toString()).emit('new_message', {
+                id: message.id,
+                conversationId,
+                text: text,
+                senderId: userId,
+                time: message.createdAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+                sentBy: 'member' // In receiver's perspective, it's 'them'
+            });
+        }
+
+        res.json({ success: true, message: 'Message sent', data: message });
     } catch (error) {
+        console.error("Chat Error:", error);
         res.status(500).json({ message: error.message });
     }
 };
 
 const getChatUsers = async (req, res) => {
     try {
-        const { tenantId, id: currentUserId } = req.user;
+        const { tenantId, role, id: userId } = req.user;
+        let users = [];
 
-        const users = await prisma.user.findMany({
-            where: {
-                OR: [
-                    { role: 'SUPER_ADMIN' },
-                    {
-                        tenantId: tenantId,
-                        role: { in: ['BRANCH_ADMIN', 'MANAGER', 'STAFF', 'TRAINER'] },
-                        id: { not: currentUserId }
-                    }
-                ],
-                status: 'Active'
-            },
-            select: {
-                id: true,
-                name: true,
-                role: true,
-                avatar: true,
-                phone: true
-            }
-        });
+        if (role === 'SUPER_ADMIN') {
+            users = await prisma.user.findMany({
+                where: {
+                    role: { in: ['BRANCH_ADMIN', 'MANAGER'] },
+                    id: { not: userId },
+                    status: 'Active'
+                },
+                select: { id: true, name: true, role: true, avatar: true }
+            });
+        } else {
+            const tenantUsers = await prisma.user.findMany({
+                where: {
+                    tenantId,
+                    id: { not: userId },
+                    status: 'Active'
+                },
+                select: { id: true, name: true, role: true, avatar: true }
+            });
+
+            const superAdmins = await prisma.user.findMany({
+                where: { role: 'SUPER_ADMIN', status: 'Active' },
+                select: { id: true, name: true, role: true, avatar: true }
+            });
+
+            users = [...tenantUsers, ...superAdmins];
+        }
 
         res.json(users);
     } catch (error) {
