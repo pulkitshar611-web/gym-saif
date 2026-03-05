@@ -194,34 +194,93 @@ const deleteTemplate = async (req, res) => {
     }
 };
 
-// GET Chat Contacts (Members + Staff + Trainers)
+// GET Chat Contacts (Exact Logic: Members + Staff + Trainers based on Role)
 const getChatContacts = async (req, res) => {
     try {
         const { branchId, search } = req.query;
         const { tenantId: userTenantId, role: userRole, id: currentUserId } = req.user;
 
-        // Force user's own tenantId unless they are SUPER_ADMIN
+        // Determine target tenantId
         let tenantId = userTenantId;
-        if (userRole === 'SUPER_ADMIN' && branchId && branchId !== 'all') {
+        const normalizedRole = userRole?.toUpperCase().trim();
+
+        if (normalizedRole === 'SUPER_ADMIN' && branchId && branchId !== 'all') {
             tenantId = parseInt(branchId);
         }
 
-        if (!tenantId) {
+        if (!tenantId && normalizedRole !== 'SUPER_ADMIN') {
             return res.status(400).json({ message: "Tenant ID required" });
         }
 
+        // Define query filters based on exact logic
+        let userFilters = {
+            tenantId,
+            status: 'Active',
+            id: { not: currentUserId }
+        };
+
+        let memberFilters = {
+            tenantId,
+            status: 'Active'
+        };
+
+        // Apply Role-Based Visibility Rules
+        if (normalizedRole === 'SUPER_ADMIN') {
+            // Can chat with all Branch Admins and Managers across all branches
+            // If branchId is 'all', they see everyone with these roles
+            userFilters.role = { in: ['BRANCH_ADMIN', 'MANAGER'] };
+            if (!tenantId || branchId === 'all') {
+                delete userFilters.tenantId;
+                delete memberFilters.tenantId; // SuperAdmins see all active members too
+            }
+        } else if (normalizedRole === 'BRANCH_ADMIN' || normalizedRole === 'MANAGER') {
+            // Can chat with SuperAdmin (even if different tenantId in schema, though usually they share)
+            // Can chat with all Staff, Trainer and Members in their branch
+            userFilters.OR = [
+                { role: 'SUPER_ADMIN' },
+                { tenantId, role: { in: ['STAFF', 'TRAINER', 'MANAGER', 'BRANCH_ADMIN'] } }
+            ];
+            delete userFilters.tenantId; // Using OR now
+        } else if (normalizedRole === 'STAFF') {
+            // Can chat with Branch Admin, Manager, and other Staff
+            // Can chat with members in their branch
+            userFilters.role = { in: ['BRANCH_ADMIN', 'MANAGER', 'STAFF'] };
+        } else if (normalizedRole === 'TRAINER') {
+            // Can chat with Branch Admin, Manager
+            // Can chat with members assigned to them
+            userFilters.role = { in: ['BRANCH_ADMIN', 'MANAGER'] };
+            memberFilters.trainerId = currentUserId;
+        } else if (normalizedRole === 'MEMBER') {
+            // Can chat with Branch Admin, Manager
+            // Can chat with their assigned trainer
+            const memberRecord = await prisma.member.findUnique({
+                where: { userId: currentUserId },
+                select: { trainerId: true }
+            });
+
+            userFilters.OR = [
+                { role: { in: ['BRANCH_ADMIN', 'MANAGER'] } },
+                ...(memberRecord?.trainerId ? [{ id: memberRecord.trainerId }] : [])
+            ];
+            memberFilters = null; // Members don't chat with other members usually
+        }
+
+        // Apply search if provided
+        if (search) {
+            const searchObj = {
+                OR: [
+                    { name: { contains: search } },
+                    { phone: { contains: search } }
+                ]
+            };
+            userFilters = { ...userFilters, ...searchObj };
+            if (memberFilters) memberFilters = { ...memberFilters, ...searchObj };
+        }
+
+        // Fetch Data
         const [members, users] = await Promise.all([
-            prisma.member.findMany({
-                where: {
-                    tenantId,
-                    ...(search ? {
-                        OR: [
-                            { name: { contains: search } },
-                            { phone: { contains: search } },
-                            { memberId: { contains: search } }
-                        ]
-                    } : {})
-                },
+            memberFilters ? prisma.member.findMany({
+                where: memberFilters,
                 select: {
                     id: true,
                     name: true,
@@ -232,19 +291,9 @@ const getChatContacts = async (req, res) => {
                     userId: true
                 },
                 take: 100
-            }),
+            }) : Promise.resolve([]),
             prisma.user.findMany({
-                where: {
-                    tenantId,
-                    status: 'Active',
-                    ...(search ? {
-                        OR: [
-                            { name: { contains: search } },
-                            { phone: { contains: search } },
-                            { email: { contains: search } }
-                        ]
-                    } : {})
-                },
+                where: userFilters,
                 select: {
                     id: true,
                     name: true,
@@ -257,13 +306,12 @@ const getChatContacts = async (req, res) => {
             })
         ]);
 
-        // Deduplication Logic
+        // Deduplication and Formatting Logic
         const contactMap = new Map();
 
-        // 1. Process Users (Staff/Admins) first - they get priority for their "Staff Role"
+        // 1. Process Users (Staff/Admins)
         users.forEach(u => {
-            if (u.id === currentUserId) return; // Don't show self
-            contactMap.set(u.phone || `user-${u.id}`, {
+            contactMap.set(u.id, {
                 id: u.id,
                 name: u.name,
                 phone: u.phone,
@@ -276,11 +324,10 @@ const getChatContacts = async (req, res) => {
 
         // 2. Process Members
         members.forEach(m => {
-            const key = m.phone || `member-${m.id}`;
-            // If the person is already in the map as a User/Staff, we keep the Staff entry
-            // but we can merge data if needed. Here, we prioritize the Staff role.
-            if (!contactMap.has(key)) {
-                contactMap.set(key, {
+            // If the member is also a user, we might have already added them
+            // But usually we chat with them as a "Member" entity if they are in the list
+            if (!contactMap.has(m.userId || `member-${m.id}`)) {
+                contactMap.set(m.userId || `member-${m.id}`, {
                     id: m.id,
                     name: m.name,
                     phone: m.phone,
@@ -294,9 +341,9 @@ const getChatContacts = async (req, res) => {
         });
 
         const finalContacts = Array.from(contactMap.values());
-
         res.json(finalContacts);
     } catch (error) {
+        console.error('getChatContacts error:', error);
         res.status(500).json({ message: error.message });
     }
 };

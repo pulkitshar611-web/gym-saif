@@ -264,7 +264,14 @@ const deleteGym = async (req, res) => {
 const getAllPlans = async (req, res) => {
     try {
         const plans = await prisma.saaSPlan.findMany();
-        res.json(plans);
+        const parsed = plans.map(p => ({
+            ...p,
+            features: p.features ? JSON.parse(p.features) : [],
+            limits: p.limits ? JSON.parse(p.limits) : null,
+            opsLimits: p.opsLimits ? JSON.parse(p.opsLimits) : null,
+            benefits: p.benefits ? JSON.parse(p.benefits) : []
+        }));
+        res.json(parsed);
     } catch (error) {
         res.status(500).json({ message: error.message });
     }
@@ -272,10 +279,24 @@ const getAllPlans = async (req, res) => {
 
 const addPlan = async (req, res) => {
     try {
-        const newPlan = await prisma.saaSPlan.create({ data: req.body });
+        const { name, price, period, features, limits, opsLimits, benefits, status, description } = req.body;
+        const newPlan = await prisma.saaSPlan.create({
+            data: {
+                name,
+                price: parseFloat(price),
+                period,
+                description,
+                status: status || 'Active',
+                features: features ? JSON.stringify(features) : null,
+                limits: limits ? JSON.stringify(limits) : null,
+                opsLimits: opsLimits ? JSON.stringify(opsLimits) : null,
+                benefits: benefits ? JSON.stringify(benefits) : null
+            }
+        });
         await logWebhook('PLAN_CREATED', 'POST', '/api/superadmin/plans', 201, newPlan);
         res.status(201).json(newPlan);
     } catch (error) {
+        console.error('Add Plan Error:', error);
         res.status(500).json({ message: error.message });
     }
 };
@@ -283,12 +304,25 @@ const addPlan = async (req, res) => {
 const updatePlan = async (req, res) => {
     try {
         const { id } = req.params;
+        const { name, price, period, features, limits, opsLimits, benefits, status, description } = req.body;
+        const data = {};
+        if (name !== undefined) data.name = name;
+        if (price !== undefined) data.price = parseFloat(price);
+        if (period !== undefined) data.period = period;
+        if (description !== undefined) data.description = description;
+        if (status !== undefined) data.status = status;
+        if (features !== undefined) data.features = JSON.stringify(features);
+        if (limits !== undefined) data.limits = JSON.stringify(limits);
+        if (opsLimits !== undefined) data.opsLimits = JSON.stringify(opsLimits);
+        if (benefits !== undefined) data.benefits = JSON.stringify(benefits);
+
         const updatedPlan = await prisma.saaSPlan.update({
             where: { id: parseInt(id) },
-            data: req.body
+            data
         });
         res.json(updatedPlan);
     } catch (error) {
+        console.error('Update Plan Error:', error);
         res.status(500).json({ message: error.message });
     }
 };
@@ -307,24 +341,85 @@ const deletePlan = async (req, res) => {
 
 const fetchDashboardCards = async (req, res) => {
     try {
+        // Date boundaries for current and previous month
+        const now = new Date();
+        const currentMonthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+        const previousMonthStart = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+        const previousMonthEnd = new Date(now.getFullYear(), now.getMonth(), 0, 23, 59, 59, 999);
+
+        // --- TOTAL GYMS ---
         const totalGyms = await prisma.tenant.count();
+        const gymsThisMonth = await prisma.tenant.count({
+            where: { createdAt: { gte: currentMonthStart } }
+        });
+        const gymsLastMonth = await prisma.tenant.count({
+            where: { createdAt: { gte: previousMonthStart, lte: previousMonthEnd } }
+        });
+        const gymsTrend = gymsThisMonth > 0 ? `+${gymsThisMonth} this month` : '0 new this month';
+        const gymsTrendDirection = gymsThisMonth > gymsLastMonth ? 'up' : gymsThisMonth < gymsLastMonth ? 'down' : 'stable';
+
+        // --- TOTAL MEMBERS ---
         const totalMembers = await prisma.user.count({ where: { role: 'MEMBER' } });
+        const membersThisMonth = await prisma.user.count({
+            where: { role: 'MEMBER', joinedDate: { gte: currentMonthStart } }
+        });
+        const membersLastMonth = await prisma.user.count({
+            where: { role: 'MEMBER', joinedDate: { gte: previousMonthStart, lte: previousMonthEnd } }
+        });
+        let membersTrend;
+        let membersTrendDirection;
+        if (membersLastMonth === 0) {
+            membersTrend = membersThisMonth > 0 ? `+${membersThisMonth} new` : 'No change';
+            membersTrendDirection = membersThisMonth > 0 ? 'up' : 'stable';
+        } else {
+            const memberChange = Math.round(((membersThisMonth - membersLastMonth) / membersLastMonth) * 100);
+            membersTrend = memberChange >= 0 ? `+${memberChange}% vs last month` : `${memberChange}% vs last month`;
+            membersTrendDirection = memberChange > 0 ? 'up' : memberChange < 0 ? 'down' : 'stable';
+        }
+
+        // --- ACTIVE PLANS (retention) ---
         const activeSubs = await prisma.subscription.count({ where: { status: 'Active' } });
-        const totalRevenue = await prisma.saasPayment.aggregate({
+        const totalSubs = await prisma.subscription.count();
+        const retentionRate = totalSubs > 0 ? Math.round((activeSubs / totalSubs) * 100) : 0;
+        const plansTrend = `${retentionRate}% retention`;
+        const plansTrendDirection = retentionRate >= 80 ? 'up' : retentionRate >= 50 ? 'stable' : 'down';
+
+        // --- MONTHLY REVENUE ---
+        const currentMonthRevenue = await prisma.saasPayment.aggregate({
+            _sum: { amount: true },
+            where: { status: 'Success', date: { gte: currentMonthStart } }
+        });
+        const lastMonthRevenue = await prisma.saasPayment.aggregate({
+            _sum: { amount: true },
+            where: { status: 'Success', date: { gte: previousMonthStart, lte: previousMonthEnd } }
+        });
+        const currentRev = currentMonthRevenue._sum.amount ? parseFloat(currentMonthRevenue._sum.amount) : 0;
+        const lastRev = lastMonthRevenue._sum.amount ? parseFloat(lastMonthRevenue._sum.amount) : 0;
+        const totalRevenueAll = await prisma.saasPayment.aggregate({
             _sum: { amount: true },
             where: { status: 'Success' }
         });
+        const revenueValue = totalRevenueAll._sum.amount ? parseFloat(totalRevenueAll._sum.amount) : 0;
 
-        // Simple growth rate logic: compare current month with previous (simulated for now with 10% base)
-        const revenueValue = totalRevenue._sum.amount ? parseFloat(totalRevenue._sum.amount) : 0;
+        let revenueTrend;
+        let revenueTrendDirection;
+        if (lastRev === 0) {
+            revenueTrend = currentRev > 0 ? `+₹${currentRev.toLocaleString()} this month` : 'No revenue yet';
+            revenueTrendDirection = currentRev > 0 ? 'up' : 'stable';
+        } else {
+            const revChange = Math.round(((currentRev - lastRev) / lastRev) * 100);
+            revenueTrend = revChange >= 0 ? `+${revChange}% vs last month` : `${revChange}% vs last month`;
+            revenueTrendDirection = revChange > 0 ? 'up' : revChange < 0 ? 'down' : 'stable';
+        }
 
         res.json([
-            { id: 1, title: 'Total Gyms', value: totalGyms.toString(), trend: '+2 this month', color: 'primary' },
-            { id: 2, title: 'Total Members', value: totalMembers.toLocaleString(), trend: '+15% vs last month', color: 'success' },
-            { id: 3, title: 'Active Plans', value: activeSubs.toString(), trend: '85% retention', color: 'warning' },
-            { id: 4, title: 'Monthly Revenue', value: `₹${revenueValue.toLocaleString()}`, trend: '+8% vs last month', color: 'success' }
+            { id: 1, title: 'Total Gyms', value: totalGyms.toString(), trend: gymsTrend, trendDirection: gymsTrendDirection, color: gymsTrendDirection === 'up' ? 'primary' : gymsTrendDirection === 'down' ? 'danger' : 'info' },
+            { id: 2, title: 'Total Members', value: totalMembers.toLocaleString(), trend: membersTrend, trendDirection: membersTrendDirection, color: membersTrendDirection === 'up' ? 'success' : membersTrendDirection === 'down' ? 'danger' : 'info' },
+            { id: 3, title: 'Active Plans', value: activeSubs.toString(), trend: plansTrend, trendDirection: plansTrendDirection, color: plansTrendDirection === 'up' ? 'success' : plansTrendDirection === 'down' ? 'danger' : 'warning' },
+            { id: 4, title: 'Monthly Revenue', value: `₹${revenueValue.toLocaleString()}`, trend: revenueTrend, trendDirection: revenueTrendDirection, color: revenueTrendDirection === 'up' ? 'success' : revenueTrendDirection === 'down' ? 'danger' : 'info' }
         ]);
     } catch (error) {
+        console.error('Dashboard Cards Error:', error);
         res.status(500).json({ message: error.message });
     }
 };
