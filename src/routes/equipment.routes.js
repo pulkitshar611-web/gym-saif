@@ -1,5 +1,6 @@
 const express = require('express');
 const {
+    getEquipmentStats,
     getAllEquipment,
     addEquipment,
     updateEquipment,
@@ -15,6 +16,7 @@ const router = express.Router();
 router.use(protect);
 router.use(authorize('SUPER_ADMIN', 'BRANCH_ADMIN', 'MANAGER', 'STAFF'));
 
+router.get('/stats', getEquipmentStats);
 router.get('/', getAllEquipment);
 router.post('/', addEquipment);
 router.patch('/:id', updateEquipment);

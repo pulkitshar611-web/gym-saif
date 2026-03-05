@@ -24,9 +24,6 @@ const {
     deleteTimeOff,
     getClassesForTrainer,
     getClassByIdForTrainer,
-    updateSession,
-    deleteSession,
-    getSessionRoster,
     getDietPlans,
     createDietPlan,
     updateDietPlan,
@@ -35,10 +32,7 @@ const {
     createWorkoutPlan,
     updateWorkoutPlan,
     toggleWorkoutPlanStatus,
-    deleteWorkoutPlan,
-    assignPlanToMember,
-    getMemberMessages,
-    sendMemberMessage
+    getTrainerDashboardStats
 } = require('../controllers/trainer.controller');
 const { getMemberProgressById } = require('../controllers/progress.controller');
 const { protect, authorize } = require('../middleware/auth.middleware');
@@ -59,16 +53,10 @@ router.get('/members/:id', getMemberById);
 router.patch('/members/:id/flag', flagMember);
 router.get('/members/:id/payments', getMemberPayments);
 router.get('/members/:id/progress', getMemberProgressById);
-router.post('/members/:id/assign-plan', assignPlanToMember);
-router.get('/members/:id/messages', getMemberMessages);
-router.post('/members/:id/messages', sendMemberMessage);
 
 // Sessions
 router.get('/sessions', getSessions);
 router.post('/sessions', createSession);
-router.patch('/sessions/:id', updateSession);
-router.delete('/sessions/:id', deleteSession);
-router.get('/sessions/:id/roster', getSessionRoster);
 router.patch('/sessions/:id/status', updateSessionStatus);
 router.post('/sessions/:id/attendance', saveAttendance);
 router.get('/session-history', getSessionHistory);
@@ -105,6 +93,8 @@ router.get('/workout-plans', getWorkoutPlans);
 router.post('/workout-plans', createWorkoutPlan);
 router.patch('/workout-plans/:id', updateWorkoutPlan);
 router.patch('/workout-plans/:id/status', toggleWorkoutPlanStatus);
-router.delete('/workout-plans/:id', deleteWorkoutPlan);
+
+// Dashboard
+router.get('/dashboard-stats', getTrainerDashboardStats);
 
 module.exports = router;

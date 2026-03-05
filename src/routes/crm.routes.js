@@ -3,6 +3,8 @@ const {
     createLead,
     getLeads,
     updateLeadStatus,
+    updateLead,
+    deleteLead,
     getTodayFollowUps,
     addFollowUp
 } = require('../controllers/crm.controller');
@@ -14,10 +16,11 @@ router.use(protect);
 // Allow all roles except MEMBER to access CRM (or customize as needed)
 router.use(authorize('SUPER_ADMIN', 'BRANCH_ADMIN', 'MANAGER', 'STAFF', 'TRAINER'));
 
-// Lead Routes
 router.post('/leads', createLead);
 router.get('/leads', getLeads);
 router.patch('/leads/:id/status', updateLeadStatus);
+router.patch('/leads/:id', updateLead);
+router.delete('/leads/:id', deleteLead);
 
 // Follow-up Routes
 router.get('/followups/today', getTodayFollowUps);

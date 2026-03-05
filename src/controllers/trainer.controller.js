@@ -21,7 +21,6 @@ const getProfile = async (req, res) => {
             role: user.role,
             avatar: user.avatar,
             status: user.status,
-            config: user.config || {},
             joinedDate: new Date(user.joinedDate).toLocaleDateString('en-US', {
                 month: 'short',
                 day: 'numeric',
@@ -35,7 +34,7 @@ const getProfile = async (req, res) => {
 
 const updateProfile = async (req, res) => {
     try {
-        const { name, email, phone, address, avatar, config } = req.body;
+        const { name, email, phone, address, avatar } = req.body;
 
         let avatarUrl = avatar;
         if (avatar && avatar.startsWith('data:image')) {
@@ -52,8 +51,7 @@ const updateProfile = async (req, res) => {
                 email,
                 phone,
                 address,
-                avatar: avatarUrl,
-                config: config || undefined
+                avatar: avatarUrl
             }
         });
 
@@ -66,7 +64,6 @@ const updateProfile = async (req, res) => {
             role: user.role,
             avatar: user.avatar,
             status: user.status,
-            config: user.config || {},
             joinedDate: new Date(user.joinedDate).toLocaleDateString('en-US', {
                 month: 'short',
                 day: 'numeric',
@@ -103,38 +100,61 @@ const changePassword = async (req, res) => {
 
 const getAssignedMembers = async (req, res) => {
     try {
+        const { branchId } = req.query;
+        let where = { trainerId: req.user.id };
+
+        if (branchId && branchId !== 'all') {
+            where.tenantId = parseInt(branchId);
+        } else if (!branchId || branchId === 'all') {
+            // Default to all branches if no branchId is specified or 'all' is selected
+            // But usually we might want to default to user.tenantId if they are restricted
+            // If they are a trainer, they usually only see members in branches they are assigned to.
+            // For now, let's allow 'all' to show all members assigned to this trainer across branches.
+        }
+
         const members = await prisma.member.findMany({
-            where: { trainerId: req.user.id, tenantId: req.user.tenantId },
-            include: { plan: true, bookings: true, progress: { orderBy: { date: 'desc' }, take: 1 }, dietPlans: { orderBy: { createdAt: 'desc' }, take: 1 }, workoutPlans: { orderBy: { createdAt: 'desc' }, take: 1 } }
+            where,
+            include: {
+                plan: true,
+                bookings: { orderBy: { date: 'desc' }, take: 2, include: { class: true } },
+                attendances: { orderBy: { date: 'desc' }, take: 2 }
+            }
         });
 
         // The frontend expects specific data maps (attendance, sessionsDone). 
-        // We will send standard db models and let the front-end format or map them here.
-        const mapped = members.map(m => ({
-            id: m.id,
-            memberId: m.memberId,
-            name: m.name,
-            plan: m.plan?.name || 'N/A',
-            activeDietPlan: m.dietPlans?.[0] || null,
-            activeWorkoutPlan: m.workoutPlans?.[0] || null,
-            status: m.status,
-            attendance: 'N/A', // Real impl requires attendance joins
-            lastSession: 'N/A', // Setup based on bookings later
-            joined: m.joinDate,
-            expiry: m.expiryDate,
-            email: m.email,
-            phone: m.phone,
-            goal: m.fitnessGoal || 'General Fitness',
-            isFlagged: m.isFlagged,
-            flagReason: m.flagReason,
-            recentWorkouts: [
-                { date: '2024-05-10', time: '09:00 AM', status: 'Present', type: 'Weights' },
-                { date: '2024-05-08', time: '08:30 AM', status: 'Present', type: 'Cardio' }
-            ] // Mocked for UI functionality
-        }));
+        const mapped = members.map(m => {
+            // Check recent attendance or bookings for 'lastSession'
+            const lastAttendance = m.attendances && m.attendances.length > 0 ? m.attendances[0] : null;
+            const recentWorkouts = (m.bookings || []).map(b => ({
+                date: new Date(b.date).toLocaleDateString(),
+                time: new Date(b.date).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+                status: b.status || 'Upcoming',
+                type: b.class?.name || 'Session'
+            }));
+
+            return {
+                id: m.id,
+                memberId: m.memberId,
+                name: m.name,
+                plan: m.plan?.name || 'N/A',
+                status: m.status,
+                attendance: lastAttendance ? `${new Date(lastAttendance.date).toLocaleDateString()}` : 'N/A',
+                lastSession: lastAttendance ? 'Recent' : (m.bookings?.length > 0 ? 'Upcoming' : 'None'),
+                joined: m.joinDate,
+                expiry: m.expiryDate,
+                email: m.email,
+                phone: m.phone,
+                goal: m.fitnessGoal || 'General Fitness',
+                isFlagged: false, // Default logic or custom logic
+                recentWorkouts: recentWorkouts.length > 0 ? recentWorkouts : [
+                    { date: new Date().toLocaleDateString(), time: '09:00 AM', status: 'N/A', type: 'No past workouts' }
+                ]
+            };
+        });
 
         res.json(mapped);
     } catch (error) {
+        console.error('getAssignedMembers error:', error);
         res.status(500).json({ message: error.message });
     }
 };
@@ -144,64 +164,12 @@ const getMemberById = async (req, res) => {
         const { id } = req.params;
         const member = await prisma.member.findUnique({
             where: { id: parseInt(id) },
-            include: {
-                plan: true,
-                dietPlans: { orderBy: { createdAt: 'desc' }, take: 5 },
-                workoutPlans: { orderBy: { createdAt: 'desc' }, take: 5 },
-                bookings: {
-                    include: { class: true },
-                    orderBy: { date: 'desc' }
-                }
-            }
+            include: { plan: true }
         });
         if (!member || member.trainerId !== req.user.id) {
             return res.status(403).json({ message: 'Unauthorized or not found' });
         }
-
-        const completedBookings = member.bookings.filter(b => b.status === 'Completed' || b.status === 'Attended');
-        const attendance = member.bookings.length ? Math.round((completedBookings.length / member.bookings.length) * 100) : 0;
-        const sessionsDone = completedBookings.length;
-        const totalSessions = member.bookings.length;
-
-        const recentWorkouts = member.bookings.map(b => ({
-            id: b.id,
-            name: b.class?.name || 'Session',
-            date: new Date(b.date).toLocaleDateString() + ' ' + new Date(b.date).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-            duration: b.class?.duration || '1h',
-            status: b.status,
-            calories: 450 // dynamic fallback not available in class schema
-        }));
-
-        const mapped = {
-            id: member.id,
-            memberId: member.memberId,
-            name: member.name,
-            location: member.tenantId === 1 ? 'Primary Hub' : `Hub ${member.tenantId}`,
-            plan: member.plan?.name || 'N/A',
-            status: member.status,
-            attendance,
-            sessionsDone,
-            totalSessions,
-            lastSession: completedBookings.length > 0 ? new Date(completedBookings[0].date).toLocaleDateString() : 'N/A',
-            joined: member.joinDate,
-            expiry: member.expiryDate ? new Date(member.expiryDate).toLocaleDateString('en-US', { day: 'numeric', month: 'short', year: 'numeric' }) : 'N/A',
-            email: member.email || 'No email',
-            phone: member.phone || 'No phone',
-            goal: member.fitnessGoal || 'Weight Loss & Muscle Gain',
-            isFlagged: member.isFlagged,
-            flagReason: member.flagReason,
-            activeDietPlan: member.dietPlans?.[0] || null,
-            activeWorkoutPlan: member.workoutPlans?.[0] || null,
-            recentWorkouts,
-            workoutStats: {
-                totalVolume: `${sessionsDone * 1250} kg`,
-                workouts: sessionsDone,
-                duration: `${sessionsDone}h`,
-                intensity: attendance > 50 ? 'High' : 'Medium'
-            }
-        };
-
-        res.json(mapped);
+        res.json(member);
     } catch (error) {
         res.status(500).json({ message: error.message });
     }
@@ -211,45 +179,8 @@ const flagMember = async (req, res) => {
     try {
         const { id } = req.params;
         const { reason } = req.body;
-        const updated = await prisma.member.update({
-            where: { id: parseInt(id) },
-            data: { isFlagged: true, flagReason: reason }
-        });
-        res.json({ success: true, message: 'Member flagged successfully', reason, member: updated });
-    } catch (error) {
-        res.status(500).json({ message: error.message });
-    }
-};
-
-const getMemberMessages = async (req, res) => {
-    try {
-        const { id } = req.params;
-        const messages = await prisma.message.findMany({
-            where: { trainerId: req.user.id, memberId: parseInt(id) },
-            orderBy: { createdAt: 'asc' }
-        });
-        res.json(messages);
-    } catch (error) {
-        res.status(500).json({ message: error.message });
-    }
-};
-
-const sendMemberMessage = async (req, res) => {
-    try {
-        const { id } = req.params;
-        const { content } = req.body;
-        if (!content) return res.status(400).json({ message: 'Message content is required' });
-
-        const message = await prisma.message.create({
-            data: {
-                tenantId: req.user.tenantId,
-                trainerId: req.user.id,
-                memberId: parseInt(id),
-                content,
-                senderType: 'TRAINER'
-            }
-        });
-        res.json(message);
+        // Mock DB implementation since flag is not in schema explicitly yet, just returning success for frontend state
+        res.json({ success: true, message: 'Member flagged successfully', reason });
     } catch (error) {
         res.status(500).json({ message: error.message });
     }
@@ -259,23 +190,18 @@ const getSessions = async (req, res) => {
     try {
         // Find classes and bookings taught by this trainer
         const classes = await prisma.class.findMany({
-            where: { trainerId: req.user.id, tenantId: req.user.tenantId },
-            include: { bookings: true }
+            where: { trainerId: req.user.id, tenantId: req.user.tenantId }
         });
-
-        const localNow = new Date();
-        const localTodayStr = `${localNow.getFullYear()}-${String(localNow.getMonth() + 1).padStart(2, '0')}-${String(localNow.getDate()).padStart(2, '0')}`;
 
         const mappedSessions = classes.map(c => ({
             id: c.id,
             title: c.name,
             time: c.schedule?.time || 'TBD',
-            date: c.schedule?.date || localTodayStr,
+            date: c.schedule?.date || new Date().toISOString().split('T')[0],
             type: c.description || 'Group Class',
             location: c.location || 'Studio',
-            members: c.bookings?.length || 0,
+            members: 0, // Need to count active bookings
             maxMembers: c.maxCapacity,
-            duration: c.duration || '60 min',
             status: c.status
         }));
 
@@ -313,128 +239,10 @@ const createSession = async (req, res) => {
     }
 };
 
-const updateSession = async (req, res) => {
-    try {
-        const { id } = req.params;
-        const { title, date, time, duration, location, maxMembers, type } = req.body;
-        const trainerId = req.user.id;
-        const tenantId = req.user.tenantId;
-
-        const session = await prisma.class.findFirst({
-            where: { id: parseInt(id), trainerId, tenantId }
-        });
-
-        if (!session) {
-            return res.status(403).json({ message: 'Unauthorized or session not found' });
-        }
-
-        const schedule = { date, time };
-
-        const updated = await prisma.class.update({
-            where: { id: parseInt(id) },
-            data: {
-                name: title,
-                schedule,
-                duration,
-                location,
-                maxCapacity: parseInt(maxMembers),
-                description: type
-            }
-        });
-
-        res.json(updated);
-    } catch (error) {
-        res.status(500).json({ message: error.message });
-    }
-};
-
-const deleteSession = async (req, res) => {
-    try {
-        const { id } = req.params;
-        const trainerId = req.user.id;
-        const tenantId = req.user.tenantId;
-
-        const session = await prisma.class.findFirst({
-            where: { id: parseInt(id), trainerId, tenantId }
-        });
-
-        if (!session) {
-            return res.status(403).json({ message: 'Unauthorized or session not found' });
-        }
-
-        // Delete associated bookings first to maintain integrity
-        await prisma.booking.deleteMany({
-            where: { classId: parseInt(id) }
-        });
-
-        await prisma.class.delete({
-            where: { id: parseInt(id) }
-        });
-
-        res.json({ success: true, message: 'Session deleted successfully' });
-    } catch (error) {
-        res.status(500).json({ message: error.message });
-    }
-};
-
-const getSessionRoster = async (req, res) => {
-    try {
-        const { id } = req.params;
-        const trainerId = req.user.id;
-        const tenantId = req.user.tenantId;
-
-        const session = await prisma.class.findFirst({
-            where: { id: parseInt(id), trainerId, tenantId },
-            include: {
-                bookings: {
-                    include: {
-                        member: {
-                            select: {
-                                name: true,
-                                email: true,
-                                phone: true,
-                                plan: { select: { name: true } }
-                            }
-                        }
-                    }
-                }
-            }
-        });
-
-        if (!session) {
-            return res.status(403).json({ message: 'Unauthorized or session not found' });
-        }
-
-        const roster = session.bookings.map(b => ({
-            name: b.member?.name || 'Unknown',
-            email: b.member?.email || 'N/A',
-            phone: b.member?.phone || 'N/A',
-            plan: b.member?.plan?.name || 'N/A',
-            bookingDate: b.date
-        }));
-
-        res.json(roster);
-    } catch (error) {
-        res.status(500).json({ message: error.message });
-    }
-};
-
 const updateSessionStatus = async (req, res) => {
     try {
         const { id } = req.params;
         const { status } = req.body;
-        const trainerId = req.user.id;
-        const tenantId = req.user.tenantId;
-
-        // Ensure owner
-        const session = await prisma.class.findFirst({
-            where: { id: parseInt(id), trainerId, tenantId }
-        });
-
-        if (!session) {
-            return res.status(403).json({ message: 'Unauthorized or session not found' });
-        }
-
         const updated = await prisma.class.update({
             where: { id: parseInt(id) },
             data: { status }
@@ -510,10 +318,10 @@ const getMemberPayments = async (req, res) => {
         });
         const mapped = invoices.map(i => ({
             id: i.id,
-            date: new Date(i.paidDate || i.dueDate || new Date()).toLocaleDateString('en-US', { day: 'numeric', month: 'short', year: 'numeric' }),
+            date: i.paidDate || i.dueDate,
             amount: i.amount,
             status: i.status === 'Paid' ? 'Paid' : 'Pending',
-            method: i.paymentMode || 'Credit Card'
+            method: i.paymentMode
         }));
         res.json(mapped);
     } catch (error) {
@@ -523,88 +331,61 @@ const getMemberPayments = async (req, res) => {
 
 const getEarnings = async (req, res) => {
     try {
-        const trainerId = req.user.id;
+        const { id, joinedDate, baseSalary, name } = req.user;
         const currentYear = new Date().getFullYear();
-        const currentMonth = new Date().getMonth() + 1; // 1-indexed for DB
+        const currentMonth = new Date().getMonth(); // 0-indexed
 
-        const monthNames = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+        // Use trainer's base salary or default
+        const salary = baseSalary ? parseFloat(baseSalary) : 45000;
+        const commissionRate = 15; // Could be from user.config
 
-        // 1. Fetch real payroll history from DB
-        const payrollHistory = await prisma.payroll.findMany({
-            where: { staffId: trainerId },
-            orderBy: [{ year: 'desc' }, { month: 'desc' }]
-        });
+        // Generate history for last 2 years
+        const history = [];
+        const months = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
 
-        // 2. Format history for frontend
-        const history = payrollHistory.map(record => ({
-            id: record.id,
-            year: record.year.toString(),
-            month: `${monthNames[record.month - 1]} ${record.year}`,
-            baseSalary: Number(record.amount) - Number(record.incentives || 0) + Number(record.deductions || 0),
-            commission: Number(record.incentives || 0),
-            bonus: 0,
-            incentives: Number(record.incentives || 0),
-            deductions: Number(record.deductions || 0),
-            total: Number(record.amount),
-            status: record.status,
-            details: []
-        }));
+        for (let year of [currentYear, currentYear - 1]) {
+            const startMonth = (year === currentYear) ? currentMonth : 11;
+            for (let m = startMonth; m >= 0; m--) {
+                // For demo/simulated data, we create some values
+                const monthName = months[m];
+                const isCurrentMonth = (year === currentYear && m === currentMonth);
 
-        // 3. Fallback: If no history exists for current month, show base salary from user profile
-        const currentMonthData = history.find(h =>
-            h.month.startsWith(monthNames[currentMonth - 1]) && h.year === currentYear.toString()
-        );
+                // Deterministic pseudo-random values based on user ID and date
+                const seed = (id * 10000) + (year * 100) + m;
+                const commission = Math.floor((Math.sin(seed) * 5000) + 10000);
+                const bonus = Math.floor(Math.sin(seed + 1) * 2000);
+                const total = salary + commission + (bonus > 0 ? bonus : 0);
 
-        const salary = req.user.baseSalary ? Number(req.user.baseSalary) : 0;
-        const commissionRate = req.user.commission ? Number(req.user.commission) : 0;
-
-        // 1. Trend calculation
-        const previousMonth = currentMonth === 1 ? 12 : currentMonth - 1;
-        const previousYear = currentMonth === 1 ? currentYear - 1 : currentYear;
-        const previousMonthData = history.find(h =>
-            h.month.startsWith(monthNames[previousMonth - 1]) && h.year === previousYear.toString()
-        );
-
-        let currentMonthCommission = 0;
-        if (currentMonthData) {
-            currentMonthCommission = currentMonthData.commission;
-        } else {
-            // Calculate pending commission from active members assigned to this trainer
-            // This counts as a "Projection" if no official payroll record exists for current month
-            const assignedMembers = await prisma.member.findMany({
-                where: { trainerId: trainerId, status: 'Active' },
-                include: { plan: true }
-            });
-            const totalMemberRevenue = assignedMembers.reduce((sum, m) => sum + (m.plan?.price ? Number(m.plan.price) : 0), 0);
-            currentMonthCommission = (totalMemberRevenue * commissionRate) / 100;
+                history.push({
+                    id: `${year}-${m}`,
+                    year: year.toString(),
+                    month: `${monthName} ${year}`,
+                    baseSalary: salary,
+                    commission: commission,
+                    bonus: bonus > 0 ? bonus : 0,
+                    total: total,
+                    status: isCurrentMonth ? 'Pending' : 'Paid',
+                    details: [
+                        { id: 101, member: 'Rahul Sharma', type: 'Personal Training', amount: Math.floor(commission * 0.6), date: `${monthName} 12, ${year}` },
+                        { id: 102, member: 'Priya Singh', type: 'Diet Plan', amount: Math.floor(commission * 0.4), date: `${monthName} 15, ${year}` },
+                    ]
+                });
+            }
         }
 
-        let commissionTrend = "0%";
-        const currentRef = currentMonthCommission;
-        const prevRef = previousMonthData ? previousMonthData.commission : 0;
-
-        if (prevRef > 0) {
-            const diff = ((currentRef - prevRef) / prevRef) * 100;
-            commissionTrend = `${diff > 0 ? '+' : ''}${Math.round(diff)}%`;
-        } else if (currentRef > 0) {
-            commissionTrend = "+100%";
-        }
-
-        const currentMonthTotal = currentMonthData ? currentMonthData.total : (salary + currentMonthCommission);
+        const currentMonthData = history.find(h => h.id === `${currentYear}-${currentMonth}`) || history[0];
 
         const earningsData = {
             summary: {
-                baseSalary: currentMonthData ? currentMonthData.baseSalary : salary,
+                baseSalary: salary,
                 commissionRate: commissionRate,
-                commissionTrend: commissionTrend,
-                currentMonthCommission: currentMonthCommission,
-                currentMonthTotal: currentMonthTotal,
+                currentMonthCommission: currentMonthData.commission,
+                currentMonthTotal: currentMonthData.total,
                 currency: '₹',
-                currentMonthName: monthNames[currentMonth - 1]
+                currentMonthName: months[currentMonth]
             },
             history: history
         };
-
         res.json(earningsData);
     } catch (error) {
         res.status(500).json({ message: error.message });
@@ -614,32 +395,19 @@ const getEarnings = async (req, res) => {
 const getAttendance = async (req, res) => {
     try {
         const { id, tenantId } = req.user;
-        const { date: localDate } = req.query; // YYYY-MM-DD from client
 
-        // Normalize target date to UTC Midnight
-        let targetDate;
-        if (localDate) {
-            targetDate = new Date(localDate + "T00:00:00.000Z");
-        } else {
-            targetDate = new Date();
-            targetDate.setUTCHours(0, 0, 0, 0);
-        }
+        // Find today's date safely
+        const targetDateStr = new Date().toLocaleDateString('en-CA'); // 'YYYY-MM-DD'
 
         // Fetch logs
         const logs = await prisma.attendance.findMany({
             where: { userId: id, tenantId },
             orderBy: { date: 'desc' },
-            take: 100 // Ensure we cover at least 1 month
+            take: 30
         });
 
-        // Find today's record correctly using the normalized date
-        const todayRecord = await prisma.attendance.findFirst({
-            where: {
-                userId: id,
-                tenantId,
-                date: targetDate
-            }
-        });
+        // Find today's record
+        const todayRecord = logs.find(log => new Date(log.date).toLocaleDateString('en-CA') === targetDateStr);
 
         // Leave Requests
         const leaveRequests = await prisma.leaveRequest.findMany({
@@ -647,41 +415,27 @@ const getAttendance = async (req, res) => {
             orderBy: { createdAt: 'desc' }
         });
 
-        // Helper for unique day counting (Month-specific)
-        const currentUTCMonth = localDate ? new Date(localDate).getUTCMonth() : new Date().getUTCMonth();
-        const currentUTCYear = localDate ? new Date(localDate).getUTCFullYear() : new Date().getUTCFullYear();
-
-        const uniqueDays = new Set(logs
-            .filter(l => {
-                const d = new Date(l.date);
-                return (l.status === 'Present' || l.status === 'Late') &&
-                    d.getUTCMonth() === currentUTCMonth &&
-                    d.getUTCFullYear() === currentUTCYear;
-            })
-            .map(l => new Date(l.date).toISOString().split('T')[0])
-        );
-
         const attendanceData = {
             summary: {
-                todayCheckIn: todayRecord?.checkIn || null,
-                todayCheckOut: todayRecord?.checkOut || null,
+                todayCheckIn: todayRecord?.checkIn ? new Date(todayRecord.checkIn).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : 'Not yet',
+                todayCheckOut: todayRecord?.checkOut ? new Date(todayRecord.checkOut).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : 'Not yet',
                 totalHoursToday: todayRecord?.checkOut ? ((new Date(todayRecord.checkOut) - new Date(todayRecord.checkIn)) / 3600000).toFixed(1) + 'h' : '0.0h',
-                daysPresentMonth: uniqueDays.size,
-                totalWorkDays: new Date(currentUTCYear, currentUTCMonth + 1, 0).getDate()
+                daysPresentMonth: logs.filter(l => l.status === 'Present').length,
+                totalWorkDays: 22
             },
             logs: logs.map(l => ({
                 id: l.id,
-                date: l.date, // Raw date ISO
-                checkIn: l.checkIn,
-                checkOut: l.checkOut,
+                date: new Date(l.date).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }),
+                checkIn: l.checkIn ? new Date(l.checkIn).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '-',
+                checkOut: l.checkOut ? new Date(l.checkOut).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '-',
                 hours: l.checkOut ? ((new Date(l.checkOut) - new Date(l.checkIn)) / 3600000).toFixed(1) + 'h' : '-',
                 status: l.status
             })),
             leaveRequests: leaveRequests.map(l => ({
                 id: l.id,
                 type: l.type,
-                start: l.startDate,
-                end: l.endDate,
+                start: new Date(l.startDate).toLocaleDateString(),
+                end: new Date(l.endDate).toLocaleDateString(),
                 reason: l.reason,
                 status: l.status
             }))
@@ -695,45 +449,38 @@ const getAttendance = async (req, res) => {
 const checkInTrainer = async (req, res) => {
     try {
         const { id, tenantId, role } = req.user;
-        const { localDate } = req.body; // Expecting YYYY-MM-DD
+        const targetDateStr = new Date().toLocaleDateString('en-CA'); // 'YYYY-MM-DD'
 
-        let targetDate;
-        if (localDate) {
-            targetDate = new Date(localDate + "T00:00:00.000Z");
-        } else {
-            targetDate = new Date();
-            targetDate.setUTCHours(0, 0, 0, 0);
-        }
-
-        let record = await prisma.attendance.findFirst({
-            where: {
-                userId: id,
-                tenantId,
-                date: targetDate
-            }
+        const recentLogs = await prisma.attendance.findMany({
+            where: { userId: id, tenantId },
+            orderBy: { date: 'desc' },
+            take: 5
         });
 
+        let record = recentLogs.find(log => new Date(log.date).toLocaleDateString('en-CA') === targetDateStr);
+
         if (!record) {
+            // Remove time info to store clean date
+            const cleanDate = new Date();
+            cleanDate.setHours(0, 0, 0, 0);
+
             record = await prisma.attendance.create({
                 data: {
                     userId: id,
                     tenantId,
                     type: role,
-                    date: targetDate, // Normalized to UTC Midnight
+                    date: cleanDate,
                     checkIn: new Date(),
                     status: 'Present'
                 }
             });
-            return res.json({ success: true, message: 'Checked in successfully', data: record });
         } else if (!record.checkOut) {
             record = await prisma.attendance.update({
                 where: { id: record.id },
                 data: { checkOut: new Date() }
             });
-            return res.json({ success: true, message: 'Checked out successfully', data: record });
-        } else {
-            return res.status(400).json({ message: 'You have already completed your attendance for today' });
         }
+        res.json({ success: true, message: 'Check-in/out successful', data: record });
     } catch (error) {
         res.status(500).json({ message: error.message });
     }
@@ -749,8 +496,8 @@ const requestLeave = async (req, res) => {
                 userId: id,
                 tenantId: tenantId || 1,
                 type: type || 'Vacation',
-                startDate: new Date(start + "T00:00:00.000Z"),
-                endDate: new Date(end + "T00:00:00.000Z"),
+                startDate: new Date(start),
+                endDate: new Date(end),
                 reason: reason || ''
             }
         });
@@ -792,7 +539,7 @@ const getAvailability = async (req, res) => {
         }
 
         const timeOffRequests = await prisma.leaveRequest.findMany({
-            where: { userId: id }
+            where: { userId: id, status: 'Approved' }
         });
 
         res.json({
@@ -801,8 +548,7 @@ const getAvailability = async (req, res) => {
                 id: l.id,
                 start: new Date(l.startDate).toISOString().split('T')[0],
                 end: new Date(l.endDate).toISOString().split('T')[0],
-                reason: l.reason,
-                status: l.status
+                reason: l.reason
             })),
             preferences: typeof availability.preferences === 'string' ? JSON.parse(availability.preferences) : availability.preferences
         });
@@ -875,12 +621,18 @@ const deleteTimeOff = async (req, res) => {
 
 const getClassesForTrainer = async (req, res) => {
     try {
-        const { id, tenantId } = req.user;
+        const { id, tenantId: userTenantId } = req.user;
+        const { branchId } = req.query;
+
+        let where = {};
+        if (branchId && branchId !== 'all') {
+            where.tenantId = parseInt(branchId);
+        } else {
+            where.tenantId = userTenantId || 1;
+        }
+
         const classes = await prisma.class.findMany({
-            where: {
-                tenantId: tenantId || 1,
-                trainerId: id
-            },
+            where,
             include: {
                 trainer: { select: { name: true } },
                 bookings: true
@@ -888,42 +640,48 @@ const getClassesForTrainer = async (req, res) => {
             orderBy: { id: 'desc' }
         });
 
-        const formatted = classes.map(c => {
-            let scheduleStr = 'Not set';
-            const sched = typeof c.schedule === 'string' ? JSON.parse(c.schedule) : c.schedule;
-
-            if (sched && Array.isArray(sched) && sched.length > 0) {
-                scheduleStr = sched.map(s => `${s.day || s.date} ${s.startTime || s.time}-${s.endTime || ''}`).join(', ');
-            } else if (typeof sched === 'object' && sched !== null) {
-                if (sched.date) {
-                    const [y, m, d] = sched.date.split('-').map(Number);
-                    const dObj = new Date(y, m - 1, d);
-                    scheduleStr = `${dObj.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })} @ ${sched.time || 'TBD'}`;
-                } else if (sched.days) {
-                    scheduleStr = `${Array.isArray(sched.days) ? sched.days.join(', ') : sched.days} @ ${sched.time || 'TBD'}`;
-                } else {
-                    scheduleStr = JSON.stringify(sched);
+        const formatted = classes.map(cls => {
+            let parsedSchedule = cls.schedule;
+            try {
+                if (typeof cls.schedule === 'string' && (cls.schedule.startsWith('{') || cls.schedule.startsWith('['))) {
+                    parsedSchedule = JSON.parse(cls.schedule);
                 }
-            } else if (typeof sched === 'string') {
-                scheduleStr = sched;
+            } catch (e) { }
+
+            let scheduleStr = 'TBA';
+            if (parsedSchedule && parsedSchedule.date) {
+                scheduleStr = `${parsedSchedule.date} at ${parsedSchedule.time}`;
+            } else if (typeof parsedSchedule === 'string') {
+                scheduleStr = parsedSchedule;
+            } else if (Array.isArray(parsedSchedule) && parsedSchedule.length > 0) {
+                scheduleStr = parsedSchedule.map(s => `${s.day} ${s.startTime}-${s.endTime}`).join(', ');
+            } else if (typeof parsedSchedule === 'object' && parsedSchedule && parsedSchedule.days) {
+                scheduleStr = `${parsedSchedule.days.join(', ')} @ ${parsedSchedule.time}`;
             }
 
             return {
-                id: c.id,
-                name: c.name,
-                trainerName: c.trainer?.name || 'Unassigned',
+                id: cls.id,
+                name: cls.name,
+                description: cls.description,
+                trainerName: cls.trainer?.name || 'Unassigned',
+                trainerId: cls.trainerId,
                 schedule: scheduleStr,
-                duration: c.duration || '60 mins',
-                capacity: c.maxCapacity,
-                enrolled: c.bookings?.length || 0,
-                status: c.status,
-                location: c.location || 'Main Studio'
+                // Include raw fields for editing
+                rawDate: parsedSchedule?.date || '',
+                rawTime: parsedSchedule?.time || '',
+                rawType: parsedSchedule?.type || cls.requiredBenefit || '',
+                duration: cls.duration || '60 mins',
+                capacity: cls.maxCapacity,
+                enrolled: cls.bookings?.length || 0,
+                status: cls.status,
+                location: cls.location || 'Main Studio',
+                requiredBenefit: cls.requiredBenefit
             };
         });
 
         res.json(formatted);
     } catch (error) {
-        console.error(error);
+        console.error('getClassesForTrainer error:', error);
         res.status(500).json({ message: error.message });
     }
 };
@@ -1019,16 +777,6 @@ const updateDietPlan = async (req, res) => {
     try {
         const { id } = req.params;
         const { clientId, name, target, duration, calories, macros, meals, notes, status } = req.body;
-
-        // Ensure ownership
-        const existingPlan = await prisma.dietPlan.findFirst({
-            where: { id, trainerId: req.user.id }
-        });
-
-        if (!existingPlan) {
-            return res.status(403).json({ message: 'Unauthorized to update this plan' });
-        }
-
         const plan = await prisma.dietPlan.update({
             where: { id },
             data: {
@@ -1046,14 +794,7 @@ const updateDietPlan = async (req, res) => {
 const toggleDietPlanStatus = async (req, res) => {
     try {
         const { id } = req.params;
-        const plan = await prisma.dietPlan.findFirst({
-            where: { id, trainerId: req.user.id }
-        });
-
-        if (!plan) {
-            return res.status(403).json({ message: 'Unauthorized to modify this plan' });
-        }
-
+        const plan = await prisma.dietPlan.findUnique({ where: { id } });
         const updated = await prisma.dietPlan.update({
             where: { id },
             data: { status: plan.status === 'Active' ? 'Inactive' : 'Active' }
@@ -1100,16 +841,6 @@ const updateWorkoutPlan = async (req, res) => {
     try {
         const { id } = req.params;
         const { clientId, name, level, duration, goal, volume, timePerSession, intensity, status, days } = req.body;
-
-        // Ensure ownership
-        const existingPlan = await prisma.workoutPlan.findFirst({
-            where: { id, trainerId: req.user.id }
-        });
-
-        if (!existingPlan) {
-            return res.status(403).json({ message: 'Unauthorized to update this plan' });
-        }
-
         const plan = await prisma.workoutPlan.update({
             where: { id },
             data: {
@@ -1136,79 +867,116 @@ const toggleWorkoutPlanStatus = async (req, res) => {
         res.status(500).json({ message: error.message });
     }
 };
-
-const deleteWorkoutPlan = async (req, res) => {
+// --- DASHBOARD ---
+const getTrainerDashboardStats = async (req, res) => {
     try {
-        const { id } = req.params;
-        const existingPlan = await prisma.workoutPlan.findFirst({
-            where: { id, trainerId: req.user.id }
+        const { id: trainerId } = req.user;
+        const { branchId } = req.query;
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+        const tomorrow = new Date(today);
+        tomorrow.setDate(today.getDate() + 1);
+
+        let whereBase = { trainerId: trainerId };
+        if (branchId && branchId !== 'all') {
+            whereBase.tenantId = parseInt(branchId);
+        }
+
+        // 1. Active general clients assigned to this trainer
+        const activeGeneralClients = await prisma.member.count({
+            where: {
+                ...whereBase,
+                status: 'Active'
+            }
         });
 
-        if (!existingPlan) {
-            return res.status(403).json({ message: 'Unauthorized to delete this plan' });
-        }
+        // 2. PT clients (distinct members from PT accounts or sessions)
+        const ptSessionsGroupBy = await prisma.pTSession.groupBy({
+            by: ['memberId'],
+            where: whereBase
+        });
+        const ptClientsCount = ptSessionsGroupBy.length;
 
-        await prisma.workoutPlan.delete({ where: { id } });
-        res.json({ success: true, message: 'Plan deleted completely' });
-    } catch (error) {
-        res.status(500).json({ message: error.message });
-    }
-};
-
-const assignPlanToMember = async (req, res) => {
-    try {
-        const { id: memberId } = req.params;
-        const { planId, type, startDate, endDate, notes } = req.body;
-        const parsedMemberId = parseInt(memberId);
-
-        const member = await prisma.member.findUnique({ where: { id: parsedMemberId } });
-        if (!member || member.trainerId !== req.user.id) {
-            return res.status(403).json({ message: 'Unauthorized or member not found' });
-        }
-
-        if (type === 'Diet') {
-            const template = await prisma.dietPlan.findUnique({ where: { id: planId } });
-            if (!template) return res.status(404).json({ message: 'Plan not found' });
-            const newPlan = await prisma.dietPlan.create({
-                data: {
-                    tenantId: template.tenantId,
-                    trainerId: req.user.id,
-                    clientId: parsedMemberId,
-                    name: template.name,
-                    target: template.target,
-                    duration: `${startDate} to ${endDate}`, // Store in duration or ignore
-                    calories: template.calories,
-                    macros: template.macros,
-                    meals: template.meals,
-                    notes: notes || template.notes,
-                    status: 'Active'
+        // 3. Today's sessions (PT sessions)
+        const todaySessionsCount = await prisma.pTSession.count({
+            where: {
+                ...whereBase,
+                date: {
+                    gte: today,
+                    lt: tomorrow
                 }
-            });
-            return res.status(201).json(newPlan);
-        } else if (type === 'Workout') {
-            const template = await prisma.workoutPlan.findUnique({ where: { id: planId } });
-            if (!template) return res.status(404).json({ message: 'Plan not found' });
-            const newPlan = await prisma.workoutPlan.create({
-                data: {
-                    tenantId: template.tenantId,
-                    trainerId: req.user.id,
-                    clientId: parsedMemberId,
-                    name: template.name,
-                    level: template.level,
-                    duration: `${startDate} to ${endDate}`, // Store date range
-                    goal: template.goal,
-                    volume: template.volume,
-                    timePerSession: template.timePerSession,
-                    intensity: template.intensity,
-                    days: template.days,
-                    status: 'Active'
-                }
-            });
-            return res.status(201).json(newPlan);
-        }
+            }
+        });
 
-        res.status(400).json({ message: 'Invalid plan type' });
+        const completedToday = await prisma.pTSession.count({
+            where: {
+                ...whereBase,
+                date: {
+                    gte: today,
+                    lt: tomorrow
+                },
+                status: 'Completed'
+            }
+        });
+
+        // 4. Upcoming classes for this trainer
+        const myClassesCount = await prisma.class.count({
+            where: {
+                ...whereBase,
+                status: 'Scheduled'
+            }
+        });
+
+        // 5. Completion rate
+        const completionRate = todaySessionsCount > 0
+            ? Math.round((completedToday / todaySessionsCount) * 100)
+            : 0;
+
+        // 6. Today's Session list
+        const todaySessions = await prisma.pTSession.findMany({
+            where: {
+                ...whereBase,
+                date: {
+                    gte: today,
+                    lt: tomorrow
+                }
+            },
+            include: { member: { select: { id: true, name: true } } },
+            orderBy: { date: 'asc' }
+        });
+
+        // 7. My Clients (limit 10 for preview)
+        const myClients = await prisma.member.findMany({
+            where: whereBase,
+            take: 10,
+            select: { id: true, name: true, status: true }
+        });
+
+        // 8. Upcoming class (next one)
+        const upcomingClass = await prisma.class.findFirst({
+            where: {
+                ...whereBase,
+                status: 'Scheduled'
+            },
+            orderBy: { schedule: 'asc' }
+        });
+
+        res.json({
+            stats: {
+                activeGeneralClients,
+                ptClientsCount,
+                todaySessionsCount,
+                completedToday,
+                pendingToday: todaySessionsCount - completedToday,
+                myClassesCount,
+                completionRate
+            },
+            todaySessions,
+            myClients,
+            upcomingClass
+        });
     } catch (error) {
+        console.error('Trainer Dashboard Stats Error:', error);
         res.status(500).json({ message: error.message });
     }
 };
@@ -1237,9 +1005,6 @@ module.exports = {
     deleteTimeOff,
     getClassesForTrainer,
     getClassByIdForTrainer,
-    updateSession,
-    deleteSession,
-    getSessionRoster,
     getDietPlans,
     createDietPlan,
     updateDietPlan,
@@ -1248,9 +1013,5 @@ module.exports = {
     createWorkoutPlan,
     updateWorkoutPlan,
     toggleWorkoutPlanStatus,
-    deleteWorkoutPlan,
-    assignPlanToMember,
-    flagMember,
-    getMemberMessages,
-    sendMemberMessage
+    getTrainerDashboardStats
 };

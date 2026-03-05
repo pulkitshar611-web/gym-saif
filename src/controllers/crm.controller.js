@@ -4,17 +4,38 @@ const prisma = require('../config/prisma');
 
 const createLead = async (req, res) => {
     try {
-        const tenantId = req.user.tenantId; // SaaS Isolation
+        const { tenantId: userTenantId, role, email, name: userName } = req.user;
         const {
-            name, phone, email, gender, age, interests, source,
-            budgetRange, preferredContact, assignedTo, followUpDate, followUpTime, notes
+            name, phone, email: leadEmail, gender, age, interests, source,
+            budgetRange, preferredContact, assignedTo, followUpDate, followUpTime, notes,
+            branchId: bodyBranchId
         } = req.body;
+        const queryBranchId = req.query.branchId;
+        const headerTenantId = req.headers['x-tenant-id'];
+
+        // Prioritize branch identifier
+        const effectiveBranchId = bodyBranchId || queryBranchId || headerTenantId;
+
+        let targetTenantId = userTenantId;
+
+        if (role === 'SUPER_ADMIN') {
+            if (effectiveBranchId && effectiveBranchId !== 'all') {
+                targetTenantId = parseInt(effectiveBranchId);
+            } else {
+                return res.status(400).json({ message: 'Branch ID is required for Super Admin to create a lead.' });
+            }
+        } else if (effectiveBranchId && effectiveBranchId !== 'all') {
+            targetTenantId = parseInt(effectiveBranchId);
+        }
+
+        if (!targetTenantId) {
+            return res.status(403).json({ message: 'Unauthorized: No branch context found.' });
+        }
 
         // Combine date and time to nextFollowUp
         let nextFollowUp = null;
         if (followUpDate) {
-            const [year, month, day] = followUpDate.split('-');
-            nextFollowUp = new Date(year, month - 1, day);
+            nextFollowUp = new Date(followUpDate);
             if (followUpTime) {
                 const [hours, minutes] = followUpTime.split(':');
                 nextFollowUp.setHours(hours, minutes);
@@ -23,34 +44,22 @@ const createLead = async (req, res) => {
 
         const lead = await prisma.lead.create({
             data: {
-                tenantId: tenantId ? tenantId : 1, // Default to 1 if superadmin (dev mode safety)
+                tenantId: targetTenantId,
                 name,
                 phone,
-                email,
+                email: leadEmail,
                 gender,
                 age: age ? parseInt(age) : null,
-                interests: interests || [],
+                interests: Array.isArray(interests) ? JSON.stringify(interests) : (interests || null),
                 source,
-                budget: budgetRange,
-                preferredContact,
+                budget: budgetRange || null,
+                preferredContact: preferredContact || "WhatsApp",
                 assignedToId: assignedTo ? parseInt(assignedTo) : null,
-                notes,
+                notes: notes || null,
                 nextFollowUp,
                 status: 'New'
             }
         });
-
-        // Create initial follow-up task if date is provided
-        if (nextFollowUp) {
-            await prisma.followUp.create({
-                data: {
-                    leadId: lead.id,
-                    status: 'Pending',
-                    nextDate: nextFollowUp,
-                    notes: 'Initial Follow-up Schedule'
-                }
-            });
-        }
 
         res.status(201).json(lead);
     } catch (error) {
@@ -61,16 +70,46 @@ const createLead = async (req, res) => {
 
 const getLeads = async (req, res) => {
     try {
-        const tenantId = req.user.tenantId;
-        const where = tenantId ? { tenantId } : {}; // Superadmin sees all? Or restrict? Let's restrict if tenantId is present.
+        const { tenantId: userTenantId, role, email, name: userName } = req.user;
+        const { search, status, assignedTo, branchId: queryBranchId } = req.query;
+        const headerTenantId = req.headers['x-tenant-id'];
 
-        // Search & Filter
-        const { search, status, assignedTo } = req.query;
+        // Prioritize branch identifier
+        const effectiveBranchId = queryBranchId || headerTenantId;
 
+        const where = {};
+
+        // Security & Filtering by branch
+        if (role === 'SUPER_ADMIN') {
+            if (effectiveBranchId && effectiveBranchId !== 'all') {
+                where.tenantId = parseInt(effectiveBranchId);
+            }
+        } else {
+            // Logic for BRANCH_ADMIN / MANAGER / etc.
+            if (effectiveBranchId && effectiveBranchId !== 'all') {
+                where.tenantId = parseInt(effectiveBranchId);
+            } else {
+                // If 'all' or not specified, limit to branches managed by this user
+                const branches = await prisma.tenant.findMany({
+                    where: {
+                        OR: [
+                            { id: userTenantId || undefined },
+                            { owner: email || undefined },
+                            { owner: userName || undefined }
+                        ].filter(cond => Object.values(cond)[0] !== undefined)
+                    },
+                    select: { id: true }
+                });
+                const managedBranchIds = branches.map(b => b.id);
+                where.tenantId = { in: managedBranchIds };
+            }
+        }
+
+        // Status Filter
         if (status && status !== 'All') where.status = status;
 
         // Strict: Trainers only see their assigned leads
-        if (req.user.role === 'TRAINER') {
+        if (role === 'TRAINER') {
             where.assignedToId = req.user.id;
         } else if (assignedTo) {
             where.assignedToId = parseInt(assignedTo);
@@ -87,10 +126,6 @@ const getLeads = async (req, res) => {
         const leads = await prisma.lead.findMany({
             where,
             include: {
-                followUps: {
-                    orderBy: { createdAt: 'desc' },
-                    take: 1
-                },
                 assignedTo: {
                     select: { id: true, name: true }
                 }
@@ -100,6 +135,7 @@ const getLeads = async (req, res) => {
 
         res.json(leads);
     } catch (error) {
+        console.error('Get Leads Error:', error);
         res.status(500).json({ message: error.message });
     }
 };
@@ -115,7 +151,13 @@ const updateLeadStatus = async (req, res) => {
         if (status === 'Converted' && lead.status !== 'Converted') {
             const bcrypt = require('bcryptjs');
             const hashedPassword = await bcrypt.hash('123456', 10);
-            const userEmail = lead.email || `member${Date.now()}@empty.com`;
+            const userEmail = lead.email || `m${Date.now()}@branch${lead.tenantId}.com`;
+
+            // Check if user already exists
+            let existingUser = await prisma.user.findUnique({ where: { email: userEmail } });
+            if (existingUser) {
+                return res.status(400).json({ message: `A user with email ${userEmail} already exists. Cannot convert lead.` });
+            }
 
             // Create user
             const newUser = await prisma.user.create({
@@ -135,12 +177,15 @@ const updateLeadStatus = async (req, res) => {
                 data: {
                     userId: newUser.id,
                     tenantId: lead.tenantId,
-                    memberId: `MEM-${Date.now()}`,
+                    memberId: `MEM-LEAD-${Date.now()}-${lead.tenantId}`,
                     name: lead.name,
                     email: userEmail,
                     phone: lead.phone,
                     status: 'Active',
-                    joinDate: new Date()
+                    joinDate: new Date(),
+                    gender: lead.gender || 'Other',
+                    source: lead.source || 'Walk-in',
+                    benefits: '[]' // Fixed: benefits must be a string in schema
                 }
             });
         }
@@ -156,11 +201,59 @@ const updateLeadStatus = async (req, res) => {
     }
 };
 
+const updateLead = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { name, email, phone, source, notes, age, gender, budgetRange } = req.body;
+
+        const updatedLead = await prisma.lead.update({
+            where: { id: parseInt(id) },
+            data: {
+                name,
+                email,
+                phone,
+                source,
+                notes,
+                age: age ? parseInt(age) : undefined,
+                gender,
+                budget: budgetRange
+            }
+        });
+
+        res.json(updatedLead);
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+
+const deleteLead = async (req, res) => {
+    try {
+        const { id } = req.params;
+
+        // Delete dependent follow-ups first
+        await prisma.followUp.deleteMany({
+            where: { leadId: parseInt(id) }
+        });
+
+        await prisma.lead.delete({
+            where: { id: parseInt(id) }
+        });
+
+        res.json({ message: 'Lead deleted successfully' });
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+
 // --- FOLLOW-UPS ---
 
 const getTodayFollowUps = async (req, res) => {
     try {
-        const tenantId = req.user.tenantId;
+        const { tenantId, role } = req.user;
+
+        if (!tenantId && role !== 'SUPER_ADMIN') {
+            return res.json([]);
+        }
 
         const startOfDay = new Date();
         startOfDay.setHours(0, 0, 0, 0);
@@ -168,16 +261,17 @@ const getTodayFollowUps = async (req, res) => {
         const endOfDay = new Date();
         endOfDay.setHours(23, 59, 59, 999);
 
-        // Find leads that have a nextFollowUp date within today
+        const where = {
+            nextFollowUp: { gte: startOfDay, lte: endOfDay },
+            status: { notIn: ['Converted', 'Lost'] }
+        };
+
+        if (role !== 'SUPER_ADMIN') {
+            where.tenantId = tenantId;
+        }
+
         const leads = await prisma.lead.findMany({
-            where: {
-                tenantId: tenantId ? tenantId : undefined,
-                nextFollowUp: {
-                    gte: startOfDay,
-                    lte: endOfDay
-                },
-                status: { notIn: ['Converted', 'Lost', 'Contacted'] }
-            },
+            where,
             include: {
                 assignedTo: { select: { id: true, name: true } }
             }
@@ -185,6 +279,7 @@ const getTodayFollowUps = async (req, res) => {
 
         res.json(leads);
     } catch (error) {
+        console.error('Get Followups Error:', error);
         res.status(500).json({ message: error.message });
     }
 };
@@ -194,17 +289,11 @@ const addFollowUp = async (req, res) => {
         const { leadId } = req.params;
         const { notes, nextDate, status } = req.body;
 
-        let parsedNextDate = null;
-        if (nextDate) {
-            const dateParts = nextDate.split('T')[0].split('-');
-            parsedNextDate = new Date(dateParts[0], dateParts[1] - 1, dateParts[2]);
-        }
-
         const followUp = await prisma.followUp.create({
             data: {
                 leadId: parseInt(leadId),
                 notes,
-                nextDate: parsedNextDate,
+                nextDate: nextDate ? new Date(nextDate) : null,
                 status: status || 'Completed'
             }
         });
@@ -213,7 +302,7 @@ const addFollowUp = async (req, res) => {
         await prisma.lead.update({
             where: { id: parseInt(leadId) },
             data: {
-                nextFollowUp: parsedNextDate,
+                nextFollowUp: nextDate ? new Date(nextDate) : null,
                 updatedAt: new Date()
             }
         });
@@ -228,6 +317,8 @@ module.exports = {
     createLead,
     getLeads,
     updateLeadStatus,
+    updateLead,
+    deleteLead,
     getTodayFollowUps,
     addFollowUp
 };

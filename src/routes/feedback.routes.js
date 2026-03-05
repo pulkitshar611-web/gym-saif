@@ -10,7 +10,7 @@ const router = express.Router();
 
 router.use(protect);
 
-router.get('/', authorize('SUPER_ADMIN', 'BRANCH_ADMIN', 'MANAGER', 'STAFF'), getAllFeedback);
+router.get('/', authorize('SUPER_ADMIN', 'BRANCH_ADMIN', 'MANAGER', 'STAFF', 'MEMBER'), getAllFeedback);
 router.post('/', authorize('SUPER_ADMIN', 'BRANCH_ADMIN', 'MANAGER', 'STAFF', 'MEMBER'), addFeedback);
 router.patch('/:id/status', authorize('SUPER_ADMIN', 'BRANCH_ADMIN', 'MANAGER', 'STAFF'), updateFeedbackStatus);
 

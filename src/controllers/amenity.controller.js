@@ -4,21 +4,84 @@ const prisma = new PrismaClient();
 // Get all amenities for a tenant
 const getAmenities = async (req, res) => {
     try {
-        const { tenantId, role } = req.user;
+        const { tenantId: userTenantId, role, email, name: userName } = req.user;
+        const headerTenantId = req.headers['x-tenant-id'];
         const where = {};
 
-        // If not super admin, isolation by tenantId
-        if (role !== 'SUPER_ADMIN') {
-            where.tenantId = tenantId;
+        console.log(`[getAmenities] Request Details:`, {
+            email,
+            role,
+            userTenantId,
+            headerTenantId,
+            headerType: typeof headerTenantId
+        });
+
+        let effectiveHeaderTenantId = headerTenantId;
+        if (effectiveHeaderTenantId === 'undefined' || effectiveHeaderTenantId === 'null') {
+            effectiveHeaderTenantId = 'all';
+        }
+
+        if (role === 'SUPER_ADMIN') {
+            if (effectiveHeaderTenantId && effectiveHeaderTenantId !== 'all') {
+                const bId = parseInt(effectiveHeaderTenantId);
+                if (!isNaN(bId)) {
+                    where.tenantId = bId;
+                    console.log(`[getAmenities] SUPER_ADMIN filtered by Tenant:`, where.tenantId);
+                }
+            } else {
+                console.log(`[getAmenities] SUPER_ADMIN global view - no filter`);
+            }
+        } else {
+            if (effectiveHeaderTenantId && effectiveHeaderTenantId !== 'all') {
+                const bId = parseInt(effectiveHeaderTenantId);
+                if (!isNaN(bId)) {
+                    where.tenantId = bId;
+                    console.log(`[getAmenities] BRANCH_ADMIN/MANAGER filtered by Header Tenant:`, where.tenantId);
+                }
+            } else {
+                // Global view
+                const branches = await prisma.tenant.findMany({
+                    where: {
+                        OR: [
+                            { id: userTenantId || -1 },
+                            { owner: email },
+                            { owner: userName }
+                        ]
+                    },
+                    select: { id: true }
+                });
+                const managedBranchIds = branches.map(b => b.id);
+                where.tenantId = { in: managedBranchIds };
+                console.log(`[getAmenities] BRANCH_ADMIN/MANAGER Global view - Branch IDs:`, managedBranchIds);
+            }
         }
 
         const amenities = await prisma.amenity.findMany({
             where,
+            include: {
+                tenant: { select: { name: true } }
+            },
             orderBy: { name: 'asc' }
         });
 
+        // If in global view, filter to show unique amenities by name
+        if ((effectiveHeaderTenantId === 'all' || !effectiveHeaderTenantId) && (role === 'BRANCH_ADMIN' || role === 'MANAGER' || role === 'SUPER_ADMIN')) {
+            const uniqueAmenities = [];
+            const seenNames = new Set();
+            for (const am of amenities) {
+                if (!seenNames.has(am.name)) {
+                    uniqueAmenities.push(am);
+                    seenNames.add(am.name);
+                }
+            }
+            console.log(`[getAmenities] Returning ${uniqueAmenities.length} unique amenities for global view`);
+            return res.json(uniqueAmenities);
+        }
+
+        console.log(`[getAmenities] Result - Count: ${amenities.length} found for tenant filter:`, where.tenantId);
         res.json(amenities);
     } catch (error) {
+        console.error('[getAmenities] Error:', error);
         res.status(500).json({ message: error.message });
     }
 };
@@ -26,59 +89,64 @@ const getAmenities = async (req, res) => {
 // Add new amenity
 const addAmenity = async (req, res) => {
     try {
-        const { tenantId, role } = req.user;
+        const { tenantId: userTenantId, role, email, name: userName } = req.user;
+        const headerTenantId = req.headers['x-tenant-id'];
         const { name, description, icon, status, gender } = req.body;
 
-        if (!tenantId && role !== 'SUPER_ADMIN') {
-            return res.status(403).json({ message: 'Tenant ID required' });
+        const isGlobal = !headerTenantId || headerTenantId === 'all' || headerTenantId === 'undefined';
+
+        if (isGlobal) {
+            let managedIds = [];
+            if (role === 'SUPER_ADMIN') {
+                const branches = await prisma.tenant.findMany({ select: { id: true } });
+                managedIds = branches.map(b => b.id);
+            } else if (role === 'BRANCH_ADMIN' || role === 'MANAGER') {
+                const branches = await prisma.tenant.findMany({
+                    where: {
+                        OR: [
+                            { id: userTenantId || -1 },
+                            { owner: email },
+                            { owner: userName }
+                        ]
+                    },
+                    select: { id: true }
+                });
+                managedIds = branches.map(b => b.id);
+            }
+
+            if (managedIds.length === 0) {
+                return res.status(403).json({ message: 'No branches found to create amenity' });
+            }
+
+            // Create for all found branches
+            const creations = managedIds.map(tId =>
+                prisma.amenity.create({
+                    data: {
+                        tenantId: tId,
+                        name,
+                        description,
+                        icon,
+                        status: status || 'Active',
+                        gender: gender || 'UNISEX'
+                    }
+                })
+            );
+
+            await Promise.all(creations);
+            console.log(`[addAmenity] Created amenity "${name}" for ${managedIds.length} branches`);
+            return res.status(201).json({ message: `Amenity created for ${managedIds.length} branches` });
         }
 
-        // --- SaaS Limit Check ---
-        if (role !== 'SUPER_ADMIN') {
-            const subscription = await prisma.subscription.findFirst({
-                where: { tenantId, status: 'Active' }
-            });
+        // Single branch creation
+        const targetTenantId = parseInt(headerTenantId);
 
-            if (subscription) {
-                const plan = await prisma.saaSPlan.findUnique({
-                    where: { id: subscription.planId }
-                });
-
-                if (plan) {
-                    // Check item count limit
-                    const limits = plan.limits || {};
-                    const amenityLimit = limits.amenities || { value: 99, isUnlimited: true };
-
-                    if (!amenityLimit.isUnlimited) {
-                        const currentCount = await prisma.amenity.count({ where: { tenantId } });
-                        if (currentCount >= parseInt(amenityLimit.value)) {
-                            return res.status(403).json({
-                                message: `Amenity limit reached. Your ${plan.name} allows up to ${amenityLimit.value} amenities.`,
-                                limitReached: true
-                            });
-                        }
-                    }
-
-                    // Check if specific name is allowed (if benefits list is defined by Super Admin)
-                    const allowedBenefits = plan.benefits; // This is a Json array of benefit objects
-                    if (Array.isArray(allowedBenefits) && allowedBenefits.length > 0) {
-                        const isAllowed = allowedBenefits.some(b =>
-                            b.name.toLowerCase() === name.toLowerCase()
-                        );
-                        if (!isAllowed) {
-                            return res.status(403).json({
-                                message: `"${name}" is not included in your current SaaS Plan (${plan.name}). Please upgrade to offer this benefit.`,
-                                allowedBenefits: allowedBenefits.map(b => b.name)
-                            });
-                        }
-                    }
-                }
-            }
+        if (isNaN(targetTenantId)) {
+            return res.status(400).json({ message: 'Invalid Branch ID' });
         }
 
         const amenity = await prisma.amenity.create({
             data: {
-                tenantId: tenantId,
+                tenantId: targetTenantId,
                 name,
                 description,
                 icon,
@@ -89,6 +157,7 @@ const addAmenity = async (req, res) => {
 
         res.status(201).json(amenity);
     } catch (error) {
+        console.error('[addAmenity] Error:', error);
         res.status(500).json({ message: error.message });
     }
 };
@@ -97,15 +166,17 @@ const addAmenity = async (req, res) => {
 const updateAmenity = async (req, res) => {
     try {
         const { id } = req.params;
-        const { tenantId, role } = req.user;
+        const { tenantId: userTenantId, role } = req.user;
+        const headerTenantId = req.headers['x-tenant-id'];
         const { name, description, icon, status, gender } = req.body;
 
         const where = { id: parseInt(id) };
         if (role !== 'SUPER_ADMIN') {
-            where.tenantId = tenantId;
+            const targetTenantId = (headerTenantId && headerTenantId !== 'all') ? parseInt(headerTenantId) : userTenantId;
+            where.tenantId = targetTenantId;
         }
 
-        // Check if exists first to return proper error or just use updateMany
+        // Check if exists first
         const existing = await prisma.amenity.findFirst({ where });
         if (!existing) {
             return res.status(404).json({ message: 'Amenity not found or access denied' });
@@ -118,6 +189,7 @@ const updateAmenity = async (req, res) => {
 
         res.json({ message: 'Amenity updated successfully', amenity });
     } catch (error) {
+        console.error('[updateAmenity] Error:', error);
         res.status(500).json({ message: error.message });
     }
 };
@@ -126,11 +198,13 @@ const updateAmenity = async (req, res) => {
 const deleteAmenity = async (req, res) => {
     try {
         const { id } = req.params;
-        const { tenantId, role } = req.user;
+        const { tenantId: userTenantId, role } = req.user;
+        const headerTenantId = req.headers['x-tenant-id'];
 
         const where = { id: parseInt(id) };
         if (role !== 'SUPER_ADMIN') {
-            where.tenantId = tenantId;
+            const targetTenantId = (headerTenantId && headerTenantId !== 'all') ? parseInt(headerTenantId) : userTenantId;
+            where.tenantId = targetTenantId;
         }
 
         const existing = await prisma.amenity.findFirst({ where });
@@ -144,6 +218,7 @@ const deleteAmenity = async (req, res) => {
 
         res.json({ message: 'Amenity deleted successfully' });
     } catch (error) {
+        console.error('[deleteAmenity] Error:', error);
         res.status(500).json({ message: error.message });
     }
 };

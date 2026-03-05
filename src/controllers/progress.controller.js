@@ -3,19 +3,27 @@ const prisma = require('../config/prisma');
 
 const getProgress = async (req, res) => {
     try {
+        const { role, id: userId, email, name: userName, tenantId: userTenantId } = req.user;
+        const { memberId: queryMemberId } = req.query;
         let member;
 
-        if (req.user.role === 'TRAINER') {
-            const memberId = req.query.memberId || req.body.memberId;
+        if (role === 'BRANCH_ADMIN' || role === 'MANAGER' || role === 'SUPER_ADMIN' || role === 'TRAINER') {
+            const memberId = queryMemberId || (req.body && req.body.memberId);
             if (!memberId) {
-                return res.status(400).json({ message: 'memberId is required for trainers' });
+                // If no memberId provided but role is member-related, try to find self as fallback
+                // though usually admins should provide memberId.
+                member = await prisma.member.findUnique({
+                    where: { userId: userId }
+                });
+            } else {
+                member = await prisma.member.findUnique({
+                    where: { id: parseInt(memberId) }
+                });
             }
-            member = await prisma.member.findUnique({
-                where: { id: parseInt(memberId) }
-            });
         } else {
+            // Member Role
             member = await prisma.member.findUnique({
-                where: { userId: req.user.id }
+                where: { userId: userId }
             });
         }
 
@@ -23,9 +31,27 @@ const getProgress = async (req, res) => {
             return res.status(404).json({ message: 'Member profile not found' });
         }
 
-        // Check authorization: if trainer, must be the assigned trainer
-        if (req.user.role === 'TRAINER' && member.trainerId !== req.user.id) {
+        // Authorization Check
+        if (role === 'TRAINER' && member.trainerId !== userId) {
             return res.status(403).json({ message: 'You are not authorized to view progress for this member' });
+        }
+
+        if (role === 'BRANCH_ADMIN' || role === 'MANAGER') {
+            // Verify member belongs to a branch this user manages
+            const branches = await prisma.tenant.findMany({
+                where: {
+                    OR: [
+                        { id: userTenantId || -1 },
+                        { owner: email || '___NONE___' },
+                        { owner: userName || '___NONE___' }
+                    ]
+                },
+                select: { id: true }
+            });
+            const managedIds = branches.map(b => b.id);
+            if (!managedIds.includes(member.tenantId)) {
+                return res.status(403).json({ message: 'Member does not belong to your managed branches' });
+            }
         }
 
         const progressLogs = await prisma.memberProgress.findMany({
@@ -33,39 +59,20 @@ const getProgress = async (req, res) => {
             orderBy: { date: 'asc' }
         });
 
-        // Fetch attendance for the last 7 days
-        const sevenDaysAgo = new Date();
-        sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
-        
-        const attendance = await prisma.attendance.findMany({
-            where: {
-                userId: member.userId,
-                date: { gte: sevenDaysAgo }
-            },
-            orderBy: { date: 'asc' }
-        });
-
-        // Group attendance by day for the chart
-        const attendanceStats = Array.from({ length: 7 }, (_, i) => {
-            const d = new Date();
-            d.setDate(d.getDate() - (6 - i));
-            const dateStr = d.toISOString().split('T')[0];
-            const present = attendance.some(a => a.date.toISOString().split('T')[0] === dateStr);
-            return {
-                day: ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][d.getDay()],
-                value: present ? 100 : 0
-            };
-        });
+        // Parse JSON strings back to objects
+        const parsedLogs = progressLogs.map(log => ({
+            ...log,
+            measurements: log.measurements ? JSON.parse(log.measurements) : {},
+            photos: log.photos ? JSON.parse(log.photos) : []
+        }));
 
         res.json({
-            logs: progressLogs,
+            logs: parsedLogs,
             targets: {
                 weight: member.targetWeight,
                 bodyFat: member.targetBodyFat,
-                goal: member.fitnessGoal,
-                height: member.height
-            },
-            attendanceStats
+                goal: member.fitnessGoal
+            }
         });
     } catch (error) {
         res.status(500).json({ message: error.message });
@@ -75,6 +82,7 @@ const getProgress = async (req, res) => {
 const getMemberProgressById = async (req, res) => {
     try {
         const { id } = req.params; // Member ID
+        const { role, id: userId, email, name: userName, tenantId: userTenantId } = req.user;
 
         const member = await prisma.member.findUnique({
             where: { id: parseInt(id) }
@@ -84,9 +92,26 @@ const getMemberProgressById = async (req, res) => {
             return res.status(404).json({ message: 'Member not found' });
         }
 
-        // Check authorization: trainer must be assigned
-        if (req.user.role === 'TRAINER' && member.trainerId !== req.user.id) {
+        // Authorization Check
+        if (role === 'TRAINER' && member.trainerId !== userId) {
             return res.status(403).json({ message: 'You are not assigned to this member' });
+        }
+
+        if (role === 'BRANCH_ADMIN' || role === 'MANAGER') {
+            const branches = await prisma.tenant.findMany({
+                where: {
+                    OR: [
+                        { id: userTenantId || -1 },
+                        { owner: email || '___NONE___' },
+                        { owner: userName || '___NONE___' }
+                    ]
+                },
+                select: { id: true }
+            });
+            const managedIds = branches.map(b => b.id);
+            if (!managedIds.includes(member.tenantId)) {
+                return res.status(403).json({ message: 'Member does not belong to your managed branches' });
+            }
         }
 
         const progressLogs = await prisma.memberProgress.findMany({
@@ -94,38 +119,19 @@ const getMemberProgressById = async (req, res) => {
             orderBy: { date: 'asc' }
         });
 
-        // Fetch attendance for the last 7 days
-        const sevenDaysAgo = new Date();
-        sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
-        
-        const attendance = await prisma.attendance.findMany({
-            where: {
-                userId: member.userId,
-                date: { gte: sevenDaysAgo }
-            },
-            orderBy: { date: 'asc' }
-        });
-
-        const attendanceStats = Array.from({ length: 7 }, (_, i) => {
-            const d = new Date();
-            d.setDate(d.getDate() - (6 - i));
-            const dateStr = d.toISOString().split('T')[0];
-            const present = attendance.some(a => a.date.toISOString().split('T')[0] === dateStr);
-            return {
-                day: ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][d.getDay()],
-                value: present ? 100 : 0
-            };
-        });
+        const parsedLogs = progressLogs.map(log => ({
+            ...log,
+            measurements: log.measurements ? JSON.parse(log.measurements) : {},
+            photos: log.photos ? JSON.parse(log.photos) : []
+        }));
 
         res.json({
-            logs: progressLogs,
+            logs: parsedLogs,
             targets: {
                 weight: member.targetWeight,
                 bodyFat: member.targetBodyFat,
-                goal: member.fitnessGoal,
-                height: member.height
-            },
-            attendanceStats
+                goal: member.fitnessGoal
+            }
         });
     } catch (error) {
         res.status(500).json({ message: error.message });
@@ -134,19 +140,21 @@ const getMemberProgressById = async (req, res) => {
 
 const logProgress = async (req, res) => {
     try {
-        const { weight, bodyFat, measurements, photos, notes, date, height, memberId: providedMemberId } = req.body;
+        const { weight, bodyFat, measurements, photos, notes, date, memberId: providedMemberId } = req.body;
+        const { role, id: userId, email, name: userName, tenantId: userTenantId } = req.user;
         let member;
 
-        if (req.user.role === 'TRAINER') {
+        if (role === 'BRANCH_ADMIN' || role === 'MANAGER' || role === 'SUPER_ADMIN' || role === 'TRAINER') {
             if (!providedMemberId) {
-                return res.status(400).json({ message: 'memberId is required for trainers' });
+                return res.status(400).json({ message: 'memberId is required for this action' });
             }
             member = await prisma.member.findUnique({
                 where: { id: parseInt(providedMemberId) }
             });
         } else {
+            // Member Role
             member = await prisma.member.findUnique({
-                where: { userId: req.user.id }
+                where: { userId: userId }
             });
         }
 
@@ -154,17 +162,26 @@ const logProgress = async (req, res) => {
             return res.status(404).json({ message: 'Member profile not found' });
         }
 
-        // Check authorization: if trainer, must be the assigned trainer
-        if (req.user.role === 'TRAINER' && member.trainerId !== req.user.id) {
+        // Authorization Check
+        if (role === 'TRAINER' && member.trainerId !== userId) {
             return res.status(403).json({ message: 'You are not authorized to log progress for this member' });
         }
 
-        // Update member height if provided
-        if (height) {
-            await prisma.member.update({
-                where: { id: member.id },
-                data: { height: parseFloat(height) }
+        if (role === 'BRANCH_ADMIN' || role === 'MANAGER') {
+            const branches = await prisma.tenant.findMany({
+                where: {
+                    OR: [
+                        { id: userTenantId || -1 },
+                        { owner: email || '___NONE___' },
+                        { owner: userName || '___NONE___' }
+                    ]
+                },
+                select: { id: true }
             });
+            const managedIds = branches.map(b => b.id);
+            if (!managedIds.includes(member.tenantId)) {
+                return res.status(403).json({ message: 'Member does not belong to your managed branches' });
+            }
         }
 
         const newProgress = await prisma.memberProgress.create({
@@ -172,9 +189,8 @@ const logProgress = async (req, res) => {
                 memberId: member.id,
                 weight: weight ? parseFloat(weight) : null,
                 bodyFat: bodyFat ? parseFloat(bodyFat) : null,
-                height: height ? parseFloat(height) : null,
-                measurements: measurements || {},
-                photos: photos || [],
+                measurements: measurements ? JSON.stringify(measurements) : JSON.stringify({}),
+                photos: photos ? JSON.stringify(photos) : JSON.stringify([]),
                 notes: notes || '',
                 date: date ? new Date(date) : new Date()
             }

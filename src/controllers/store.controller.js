@@ -5,10 +5,30 @@ const cloudinary = require('../utils/cloudinary');
 exports.getProducts = async (req, res) => {
     try {
         const { category, search, allStatus } = req.query;
+        const { tenantId: userTenantId, role, email, name: userName } = req.user;
+        // Read branchId from query OR the x-tenant-id header (set by apiClient interceptor)
+        const rawBranchId = req.query.branchId || req.headers['x-tenant-id'];
+        const branchId = rawBranchId && rawBranchId !== 'all' && rawBranchId !== 'undefined' ? rawBranchId : null;
         let where = {};
 
-        if (req.user && req.user.role !== 'SUPER_ADMIN') {
-            where.tenantId = req.user.tenantId;
+        if (role === 'SUPER_ADMIN') {
+            if (branchId) {
+                where.tenantId = parseInt(branchId);
+            }
+        } else {
+            if (branchId) {
+                where.tenantId = parseInt(branchId);
+            } else {
+                let orConditions = [{ id: userTenantId }];
+                if (email) orConditions.push({ owner: email });
+                if (userName) orConditions.push({ owner: userName });
+
+                const branches = await prisma.tenant.findMany({
+                    where: { OR: orConditions },
+                    select: { id: true }
+                });
+                where.tenantId = { in: branches.map(b => b.id) };
+            }
         }
 
         if (allStatus !== 'true') {
@@ -20,24 +40,143 @@ exports.getProducts = async (req, res) => {
         }
 
         if (search) {
-            where.name = { contains: search, mode: 'insensitive' };
+            where.name = { contains: search };
         }
+
+        console.log(`[getProducts] role=${role}, branchId=${branchId}, where=`, JSON.stringify(where));
 
         const products = await prisma.storeProduct.findMany({
             where,
+            include: { tenant: { select: { name: true } } },
             orderBy: { createdAt: 'desc' },
         });
 
+        console.log(`[getProducts] Found ${products.length} products`);
         res.json(products);
     } catch (error) {
         res.status(500).json({ message: error.message });
     }
 };
 
+exports.getStoreStats = async (req, res) => {
+    try {
+        const { tenantId: userTenantId, role, email, name: userName } = req.user;
+        // Read branchId from query OR the x-tenant-id header
+        const rawBranchId = req.query.branchId || req.headers['x-tenant-id'];
+        const branchId = rawBranchId && rawBranchId !== 'all' && rawBranchId !== 'undefined' ? rawBranchId : null;
+
+        let targetTenantIds = [];
+
+        if (role === 'SUPER_ADMIN') {
+            if (branchId) {
+                targetTenantIds = [parseInt(branchId)];
+            } else {
+                const branches = await prisma.tenant.findMany({ select: { id: true } });
+                targetTenantIds = branches.map(b => b.id);
+            }
+        } else {
+            if (branchId) {
+                targetTenantIds = [parseInt(branchId)];
+            } else {
+                let orConditions = [{ id: userTenantId }];
+                if (email) orConditions.push({ owner: email });
+                if (userName) orConditions.push({ owner: userName });
+
+                const branches = await prisma.tenant.findMany({
+                    where: { OR: orConditions },
+                    select: { id: true }
+                });
+                targetTenantIds = branches.map(b => b.id);
+            }
+        }
+
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+
+        const [products, orders, categoriesCount] = await Promise.all([
+            prisma.storeProduct.findMany({ where: { tenantId: { in: targetTenantIds } } }),
+            prisma.storeOrder.findMany({
+                where: { tenantId: { in: targetTenantIds } },
+                include: { items: { include: { product: true } }, member: true },
+                orderBy: { date: 'desc' }
+            }),
+            prisma.storeCategory.count({ where: { tenantId: { in: targetTenantIds } } })
+        ]);
+
+        const totalProducts = products.length;
+        const lowStockCount = products.filter(p => p.stock < 10).length;
+        const stockValue = products.reduce((acc, p) => acc + (parseFloat(p.price) * p.stock), 0);
+
+        const todayOrders = orders.filter(o => new Date(o.createdAt) >= today);
+        const todayPos = todayOrders.reduce((acc, o) => acc + parseFloat(o.total || 0), 0);
+        const totalRevenue = orders.reduce((acc, o) => acc + parseFloat(o.total || 0), 0);
+        const totalSales = orders.length;
+
+        // Simple profit calculation: (Price - Cost) * Quantity for all sales
+        let totalProfit = 0;
+        orders.forEach(order => {
+            order.items.forEach(item => {
+                const cost = parseFloat(item.product?.costPrice || 0);
+                const price = parseFloat(item.priceAtBuy || 0);
+                totalProfit += (price - cost) * item.quantity;
+            });
+        });
+
+        res.json({
+            stats: {
+                totalSales,
+                productsCount: totalProducts,
+                todayPos,
+                totalRevenue,
+                profit: totalProfit,
+                stockValue,
+                lowStockCount,
+                categoriesCount,
+                pendingOrders: orders.filter(o => o.status === 'Pending').length,
+                todaySalesCount: todayOrders.length
+            },
+            recentTransactions: orders.slice(0, 5).map(o => ({
+                id: o.id.toString(),
+                amount: o.total,
+                status: o.status,
+                itemsCount: o.itemsCount,
+                date: o.date || o.createdAt
+            })),
+            orders: orders.slice(0, 10).map(o => ({
+                ...o,
+                totalAmount: o.total // convenience for frontend
+            }))
+        });
+    } catch (error) {
+        console.error("Store stats error:", error);
+        res.status(500).json({ message: error.message });
+    }
+};
+
 exports.addProduct = async (req, res) => {
     try {
-        const { name, sku, category, price, stock, description, image, originalPrice } = req.body;
-        const tenantId = req.user.tenantId || 1;
+        const { name, sku, category, price, stock, description, image, originalPrice, branchId, costPrice, taxRate } = req.body;
+        const { tenantId: userTenantId, role, email, name: userName } = req.user;
+
+        console.log(`[addProduct] branchId from body: ${branchId}, userTenantId: ${userTenantId}, role: ${role}`);
+
+        let targetTenantIds = [];
+
+        if (branchId === 'all') {
+            let branchQuery = {};
+            if (role !== 'SUPER_ADMIN') {
+                let orConditions = [{ id: userTenantId }];
+                if (email) orConditions.push({ owner: email });
+                if (userName) orConditions.push({ owner: userName });
+                branchQuery.where = { OR: orConditions };
+            }
+            const branches = await prisma.tenant.findMany(branchQuery);
+            targetTenantIds = branches.map(b => b.id);
+        } else if (branchId) {
+            targetTenantIds = [parseInt(branchId)];
+        } else {
+            targetTenantIds = [userTenantId];
+        }
 
         // calculate status based on stock
         let status = 'Active';
@@ -53,24 +192,31 @@ exports.addProduct = async (req, res) => {
             imageUrl = uploadRes.secure_url;
         }
 
-        const product = await prisma.storeProduct.create({
-            data: {
-                tenantId,
-                name,
-                sku,
-                category,
-                price: parseFloat(price),
-                stock: parseInt(stock),
-                status,
-                description,
-                image: imageUrl,
-                originalPrice: originalPrice ? parseFloat(originalPrice) : null,
-            }
-        });
+        const products = await Promise.all(targetTenantIds.map(tId =>
+            prisma.storeProduct.create({
+                data: {
+                    tenantId: tId,
+                    name,
+                    sku,
+                    category,
+                    price: parseFloat(price),
+                    costPrice: costPrice ? parseFloat(costPrice) : null,
+                    taxRate: taxRate ? parseFloat(taxRate) : 0,
+                    stock: parseInt(stock),
+                    status,
+                    description,
+                    image: imageUrl,
+                    originalPrice: originalPrice ? parseFloat(originalPrice) : null,
+                }
+            })
+        ));
 
-        res.status(201).json(product);
+        res.status(201).json(products[0]);
     } catch (error) {
         console.error("Create product error:", error);
+        if (error.code === 'P2002') {
+            return res.status(400).json({ message: `A product with SKU "${req.body.sku}" already exists. Please use a unique SKU.` });
+        }
         res.status(500).json({ message: error.message });
     }
 };
@@ -100,7 +246,7 @@ exports.updateStock = async (req, res) => {
 exports.updateProduct = async (req, res) => {
     try {
         const { id } = req.params;
-        const { name, sku, category, price, stock, description, image, originalPrice, status } = req.body;
+        const { name, sku, category, price, stock, description, image, originalPrice, status, costPrice, taxRate } = req.body;
 
         // Auto calculate status if stock updated and status is not explicitly set to something else
         let calculatedStatus = status || 'Active';
@@ -123,6 +269,8 @@ exports.updateProduct = async (req, res) => {
                 sku,
                 category,
                 price: parseFloat(price),
+                costPrice: costPrice ? parseFloat(costPrice) : null,
+                taxRate: taxRate ? parseFloat(taxRate) : 0,
                 stock: parseInt(stock),
                 status: calculatedStatus,
                 description,
@@ -153,30 +301,43 @@ exports.deleteProduct = async (req, res) => {
 
 exports.checkout = async (req, res) => {
     try {
-        const { tenantId, role } = req.user;
-        const { memberId, cartItems, totalAmount, discountCode, pointsRedeemed } = req.body;
+        const { tenantId: reqTenantId, role } = req.user;
+        const { memberId, items, total, guestInfo, tenantId: bodyTenantId } = req.body;
 
         const order = await prisma.$transaction(async (tx) => {
-            const memberRaw = await tx.$queryRaw`SELECT * FROM member WHERE userId = ${req.user.id}`;
-            const member = memberRaw[0];
-            if (!member && role === 'MEMBER') {
-                throw new Error("Member not found");
+            let actualMemberId = null;
+            let actualTenantId = reqTenantId || 1;
+            
+            // Allow Super Admin or Branch Admin/Manager to checkout on behalf of a specific branch
+            if (['SUPER_ADMIN', 'BRANCH_ADMIN', 'MANAGER'].includes(role) && bodyTenantId) {
+                actualTenantId = parseInt(bodyTenantId);
             }
-            const actualMemberId = role === 'MEMBER' ? member.id : parseInt(memberId) || 1;
-            const actualTenantId = role === 'MEMBER' ? member.tenantId : tenantId;
+
+            if (role === 'MEMBER') {
+                const memberRaw = await tx.$queryRaw`SELECT * FROM member WHERE userId = ${req.user.id}`;
+                const member = memberRaw[0];
+                if (!member) throw new Error("Member not found");
+                actualMemberId = member.id;
+                actualTenantId = member.tenantId;
+            } else if (memberId) {
+                actualMemberId = parseInt(memberId);
+            }
 
             let finalTotal = 0;
             let itemsCount = 0;
             const orderItemsInput = [];
 
-            for (const item of cartItems) {
-                const product = await tx.storeProduct.findUnique({ where: { id: item.id } });
-                if (!product) throw new Error(`Product ${item.id} not found`);
+            for (const item of items) {
+                const product = await tx.storeProduct.findUnique({ where: { id: parseInt(item.productId) } });
+                if (!product) throw new Error(`Product ${item.productId} not found`);
                 if (product.stock < item.quantity) throw new Error(`Insufficient stock for ${product.name}`);
 
                 await tx.storeProduct.update({
                     where: { id: product.id },
-                    data: { stock: product.stock - item.quantity }
+                    data: {
+                        stock: product.stock - item.quantity,
+                        status: (product.stock - item.quantity) === 0 ? 'Inactive' : ((product.stock - item.quantity) <= 10 ? 'Low Stock' : 'Active')
+                    }
                 });
 
                 finalTotal += parseFloat(product.price) * parseInt(item.quantity);
@@ -189,111 +350,21 @@ exports.checkout = async (req, res) => {
                 });
             }
 
-            // Apply Promo Code validation from DB
-            let discountAmount = 0;
-            if (discountCode) {
-                const promo = await tx.promoCode.findUnique({
-                    where: { code: discountCode.toUpperCase() }
-                });
-
-                if (!promo) {
-                    throw new Error("Invalid promo code");
-                }
-                if (promo.status !== 'Active') {
-                    throw new Error("Promo code is inactive");
-                }
-                if (promo.expiryDate && new Date() > promo.expiryDate) {
-                    throw new Error("Promo code has expired");
-                }
-                if (promo.usageLimit && promo.usedCount >= promo.usageLimit) {
-                    throw new Error("Promo code usage limit fully reached");
-                }
-
-                if (promo.type === 'PERCENTAGE') {
-                    discountAmount = finalTotal * (parseFloat(promo.value) / 100);
-                } else {
-                    discountAmount = parseFloat(promo.value);
-                }
-
-                // Increment used count
-                await tx.promoCode.update({
-                    where: { id: promo.id },
-                    data: { usedCount: { increment: 1 } }
-                });
-            }
-
-            const pointsValue = pointsRedeemed ? parseInt(pointsRedeemed) : 0;
-
-            // Validate points against member's available rewards
-            if (pointsValue > 0 && actualMemberId) {
-                const rewards = await tx.reward.findMany({ where: { memberId: actualMemberId } });
-                const pointsBalance = rewards.reduce((sum, r) => sum + r.points, 0);
-
-                // Allow proceeding if they don't have enough strictly from DB since we mock it in UI,
-                // but realistically we should limit it. Since the UI gives 500 mock points, let's gracefully ignore 
-                // DB limit if they have 0 for demo purposes, OR formally give them negative points.
-                // We'll log the redemption as negative points.
-
-                await tx.reward.create({
-                    data: {
-                        tenantId: actualTenantId,
-                        memberId: actualMemberId,
-                        name: "POS Points Redemption",
-                        points: -pointsValue,
-                        description: `Used points for Store Order at POS`
-                    }
-                });
-            }
-
-            const taxableAmount = Math.max(0, finalTotal - discountAmount - pointsValue);
-
-            // Fetch dynamic settings for tax and prefix
-            const settings = await tx.tenantSettings.findUnique({ where: { tenantId: actualTenantId } });
-            const gstRate = settings?.gstPercent ? (parseFloat(settings.gstPercent) / 100) : 0.18;
-            const prefix = settings?.invoicePrefix || 'INV-';
-
-            const computedFinalTotal = taxableAmount + (taxableAmount * gstRate);
-
             const newOrder = await tx.storeOrder.create({
                 data: {
                     tenantId: actualTenantId,
                     memberId: actualMemberId,
+                    guestName: guestInfo?.name,
+                    guestPhone: guestInfo?.phone,
+                    guestEmail: guestInfo?.email,
                     itemsCount,
-                    total: computedFinalTotal, // Save computed real total
-                    status: 'Processing',
+                    total: finalTotal,
+                    status: 'Completed', // POS orders are typically completed instantly
                     items: {
                         create: orderItemsInput
                     }
                 }
             });
-
-            // Auto-Generate Invoice corresponding to this Store order
-            const invoice = await tx.invoice.create({
-                data: {
-                    tenantId: actualTenantId,
-                    invoiceNumber: `${prefix}STR-${Date.now()}`,
-                    memberId: actualMemberId,
-                    amount: computedFinalTotal,
-                    paymentMode: 'Cash/Card',
-                    status: 'Paid',
-                    dueDate: new Date(),
-                }
-            });
-
-            // Communication Integration
-            const templates = settings?.messageTemplates || [];
-            const template = templates.find(t => t.name === 'Payment Success' || t.id === 2);
-            if (template && actualMemberId) {
-                const memberObj = await tx.member.findUnique({ where: { id: actualMemberId } });
-                if (memberObj) {
-                    const message = template.text
-                        .replace('{{name}}', memberObj.name)
-                        .replace('{{amount}}', computedFinalTotal)
-                        .replace('{{month}}', new Date().toLocaleString('default', { month: 'long' }));
-                    console.log(`[COMMUNICATION] Sent ${template.type} to ${memberObj.name}: ${message}`);
-                }
-            }
-
             return newOrder;
         });
 
@@ -306,23 +377,33 @@ exports.checkout = async (req, res) => {
 
 exports.getOrders = async (req, res) => {
     try {
-        const { role } = req.user;
+        const { tenantId: userTenantId, role, email, name: userName } = req.user;
+        const rawBranchId = req.query.branchId || req.headers['x-tenant-id'];
+        const branchId = rawBranchId && rawBranchId !== 'all' && rawBranchId !== 'undefined' ? rawBranchId : null;
 
         let where = {};
+
         if (role === 'MEMBER') {
             const memberRaw = await prisma.$queryRaw`SELECT * FROM member WHERE userId = ${req.user.id}`;
             const member = memberRaw[0];
             if (!member) return res.status(404).json({ message: 'Member profile not found' });
-
             where.memberId = member.id;
-        } else if (role !== 'SUPER_ADMIN') {
-            where.tenantId = req.user.tenantId;
+        } else if (role === 'SUPER_ADMIN') {
+            if (branchId) {
+                where.tenantId = parseInt(branchId);
+            }
+        } else {
+            if (branchId) {
+                where.tenantId = parseInt(branchId);
+            } else {
+                where.tenantId = userTenantId;
+            }
         }
 
         const orders = await prisma.storeOrder.findMany({
             where,
             include: {
-                member: true,
+                member: { select: { name: true } },
                 items: {
                     include: {
                         product: true
@@ -334,16 +415,381 @@ exports.getOrders = async (req, res) => {
 
         const formatted = orders.map(o => ({
             id: o.id,
-            total: o.total,
-            items: o.itemsCount,
+            totalAmount: parseFloat(o.total || 0),
+            total: parseFloat(o.total || 0),
+            itemsCount: o.items ? o.items.length : (o.itemsCount || 0),
             status: o.status,
-            date: new Date(o.date).toISOString().split('T')[0],
-            member: o.member?.name || 'Unknown'
+            createdAt: o.date || o.createdAt,
+            date: o.date || o.createdAt,
+            member: o.member,
+            memberName: o.member?.name || null,
+            guestName: o.guestName || null,
+            guestPhone: o.guestPhone || null,
+            guestEmail: o.guestEmail || null,
+            tenantId: o.tenantId,
+            items: (o.items || []).map(item => ({
+                id: item.id,
+                productName: item.product?.name || 'Unknown Product',
+                quantity: item.quantity,
+                price: parseFloat(item.priceAtBuy || item.product?.price || 0),
+                total: parseFloat(item.priceAtBuy || item.product?.price || 0) * item.quantity
+            }))
         }));
 
         res.json(formatted);
     } catch (error) {
         console.error("Store orders error:", error);
+        res.status(500).json({ message: error.message });
+    }
+};
+
+// Coupons
+exports.getCoupons = async (req, res) => {
+    try {
+        const { status, search } = req.query;
+        const { tenantId: userTenantId, role, email, name: userName } = req.user;
+        const rawBranchId = req.query.branchId || req.headers['x-tenant-id'];
+        const branchId = rawBranchId && rawBranchId !== 'all' && rawBranchId !== 'undefined' ? rawBranchId : null;
+        let where = {};
+
+        if (role === 'SUPER_ADMIN') {
+            if (branchId) {
+                where.tenantId = parseInt(branchId);
+            }
+        } else {
+            if (branchId) {
+                where.tenantId = parseInt(branchId);
+            } else {
+                let orConditions = [{ id: userTenantId }];
+                if (email) orConditions.push({ owner: email });
+                if (userName) orConditions.push({ owner: userName });
+
+                const branches = await prisma.tenant.findMany({
+                    where: { OR: orConditions },
+                    select: { id: true }
+                });
+                where.tenantId = { in: branches.map(b => b.id) };
+            }
+        }
+
+        if (status && status !== 'All Status') {
+            if (status === 'Expired') {
+                where.OR = [
+                    { status: 'Expired' },
+                    { endDate: { lt: new Date() } }
+                ];
+            } else {
+                where.status = status;
+            }
+        }
+
+        if (search) {
+            where.code = { contains: search };
+        }
+
+        const coupons = await prisma.coupon.findMany({
+            where,
+            include: { tenant: { select: { name: true } } },
+            orderBy: { createdAt: 'desc' },
+        });
+
+        res.json(coupons);
+    } catch (error) {
+        console.error("Get coupons error:", error);
+        res.status(500).json({ message: error.message });
+    }
+};
+
+exports.getCouponStats = async (req, res) => {
+    try {
+        const { tenantId: userTenantId, role, email, name: userName } = req.user;
+        const rawBranchId = req.query.branchId || req.headers['x-tenant-id'];
+        const branchId = rawBranchId && rawBranchId !== 'all' && rawBranchId !== 'undefined' ? rawBranchId : null;
+        let where = {};
+
+        if (role === 'SUPER_ADMIN') {
+            if (branchId) {
+                where.tenantId = parseInt(branchId);
+            }
+        } else {
+            if (branchId) {
+                where.tenantId = parseInt(branchId);
+            } else {
+                let orConditions = [{ id: userTenantId }];
+                if (email) orConditions.push({ owner: email });
+                if (userName) orConditions.push({ owner: userName });
+
+                const branches = await prisma.tenant.findMany({
+                    where: { OR: orConditions },
+                    select: { id: true }
+                });
+                where.tenantId = { in: branches.map(b => b.id) };
+            }
+        }
+
+        const totalCoupons = await prisma.coupon.count({ where });
+        const activeCoupons = await prisma.coupon.count({ where: { ...where, status: 'Active' } });
+        const expiredCoupons = await prisma.coupon.count({
+            where: {
+                ...where,
+                OR: [
+                    { status: 'Expired' },
+                    { endDate: { lt: new Date() } }
+                ]
+            }
+        });
+
+        const redemptions = await prisma.coupon.aggregate({
+            where,
+            _sum: {
+                usedCount: true
+            }
+        });
+
+        res.json({
+            totalCoupons,
+            activeCoupons,
+            expiredCoupons,
+            totalRedemptions: redemptions._sum.usedCount || 0
+        });
+    } catch (error) {
+        console.error("Get coupon stats error:", error);
+        res.status(500).json({ message: error.message });
+    }
+};
+
+exports.createCoupon = async (req, res) => {
+    try {
+        const { code, description, type, value, minPurchase, maxUses, startDate, endDate, status } = req.body;
+        const { tenantId: userTenantId, role, email, name: userName } = req.user;
+        const rawBranchId = req.body.branchId || req.headers['x-tenant-id'];
+        const branchId = rawBranchId && rawBranchId !== 'undefined' ? rawBranchId : null;
+
+        let targetTenantIds = [];
+
+        if (branchId === 'all') {
+            let branchQuery = {};
+            if (role !== 'SUPER_ADMIN') {
+                let orConditions = [{ id: userTenantId }];
+                if (email) orConditions.push({ owner: email });
+                if (userName) orConditions.push({ owner: userName });
+                branchQuery.where = { OR: orConditions };
+            }
+            const branches = await prisma.tenant.findMany(branchQuery);
+            targetTenantIds = branches.map(b => b.id);
+        } else if (branchId) {
+            targetTenantIds = [parseInt(branchId)];
+        } else {
+            targetTenantIds = [userTenantId];
+        }
+
+        const coupons = await Promise.all(targetTenantIds.map(tId =>
+            prisma.coupon.create({
+                data: {
+                    tenantId: tId,
+                    code,
+                    description,
+                    type,
+                    value: parseFloat(value),
+                    minPurchase: minPurchase ? parseFloat(minPurchase) : 0,
+                    maxUses: maxUses ? parseInt(maxUses) : 0,
+                    startDate: startDate ? new Date(startDate) : new Date(),
+                    endDate: endDate ? new Date(endDate) : null,
+                    status: status || 'Active',
+                }
+            })
+        ));
+
+        res.status(201).json(coupons[0]);
+    } catch (error) {
+        console.error("Create coupon error:", error);
+        if (error.code === 'P2002') {
+            return res.status(400).json({ message: `A coupon with code "${req.body.code}" already exists. Please use a unique code.` });
+        }
+        res.status(500).json({ message: error.message });
+    }
+};
+
+exports.updateCoupon = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { code, description, type, value, minPurchase, maxUses, startDate, endDate, status } = req.body;
+        const rawBranchId = req.body.tenantId || req.headers['x-tenant-id'];
+        const branchId = rawBranchId && rawBranchId !== 'all' && rawBranchId !== 'undefined' ? rawBranchId : null;
+
+        const coupon = await prisma.coupon.update({
+            where: { id: parseInt(id) },
+            data: {
+                code,
+                description,
+                type,
+                value: value ? parseFloat(value) : undefined,
+                minPurchase: minPurchase !== undefined ? parseFloat(minPurchase) : undefined,
+                maxUses: maxUses !== undefined ? parseInt(maxUses) : undefined,
+                startDate: startDate ? new Date(startDate) : undefined,
+                endDate: endDate ? new Date(endDate) : null,
+                status,
+                tenantId: branchId ? parseInt(branchId) : undefined,
+            }
+        });
+
+        res.json(coupon);
+    } catch (error) {
+        console.error("Update coupon error:", error);
+        res.status(500).json({ message: error.message });
+    }
+};
+
+exports.deleteCoupon = async (req, res) => {
+    try {
+        const { id } = req.params;
+        await prisma.coupon.delete({
+            where: { id: parseInt(id) }
+        });
+        res.json({ message: 'Coupon deleted successfully' });
+    } catch (error) {
+        console.error("Delete coupon error:", error);
+        res.status(500).json({ message: error.message });
+    }
+};
+
+exports.getCategories = async (req, res) => {
+    try {
+        const { search, branchId } = req.query;
+        const { tenantId: userTenantId, role, email, name: userName } = req.user;
+        let where = {};
+
+        if (role === 'SUPER_ADMIN') {
+            if (branchId && branchId !== 'all') {
+                where.tenantId = parseInt(branchId);
+            }
+        } else {
+            if (branchId && branchId !== 'all') {
+                where.tenantId = parseInt(branchId);
+            } else {
+                let orConditions = [{ id: userTenantId }];
+                if (email) orConditions.push({ owner: email });
+                if (userName) orConditions.push({ owner: userName });
+
+                const branches = await prisma.tenant.findMany({
+                    where: { OR: orConditions },
+                    select: { id: true }
+                });
+                where.tenantId = { in: branches.map(b => b.id) };
+            }
+        }
+
+        if (search) {
+            where.name = { contains: search };
+        }
+
+        const categories = await prisma.storeCategory.findMany({
+            where,
+            include: { tenant: { select: { name: true } } },
+            orderBy: { sortOrder: 'asc' },
+        });
+
+        res.json(categories);
+    } catch (error) {
+        console.error("Get categories error:", error);
+        res.status(500).json({ message: error.message });
+    }
+};
+
+exports.createCategory = async (req, res) => {
+    try {
+        const { name, description, image, sortOrder, status, branchId } = req.body;
+        const { tenantId: userTenantId, role, email, name: userName } = req.user;
+
+        let targetTenantIds = [];
+
+        if (branchId === 'all') {
+            let branchQuery = {};
+            if (role !== 'SUPER_ADMIN') {
+                let orConditions = [{ id: userTenantId }];
+                if (email) orConditions.push({ owner: email });
+                if (userName) orConditions.push({ owner: userName });
+                branchQuery.where = { OR: orConditions };
+            }
+            const branches = await prisma.tenant.findMany(branchQuery);
+            targetTenantIds = branches.map(b => b.id);
+        } else if (branchId) {
+            targetTenantIds = [parseInt(branchId)];
+        } else {
+            targetTenantIds = [userTenantId];
+        }
+
+        let imageUrl = image;
+        if (image && image.startsWith('data:image')) {
+            const uploadRes = await cloudinary.uploader.upload(image, {
+                folder: 'gym/store/categories'
+            });
+            imageUrl = uploadRes.secure_url;
+        }
+
+        const categories = await Promise.all(targetTenantIds.map(tId =>
+            prisma.storeCategory.create({
+                data: {
+                    tenantId: tId,
+                    name,
+                    description,
+                    image: imageUrl,
+                    sortOrder: parseInt(sortOrder) || 0,
+                    status: status || 'Active',
+                }
+            })
+        ));
+
+        res.status(201).json(categories[0]);
+    } catch (error) {
+        console.error("Create category error:", error);
+        if (error.code === 'P2002') {
+            return res.status(400).json({ message: `A category with the name "${req.body.name}" already exists for this branch.` });
+        }
+        res.status(500).json({ message: error.message });
+    }
+};
+
+exports.updateCategory = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { name, description, image, sortOrder, status } = req.body;
+
+        let imageUrl = image;
+        if (image && image.startsWith('data:image')) {
+            const uploadRes = await cloudinary.uploader.upload(image, {
+                folder: 'gym/store/categories'
+            });
+            imageUrl = uploadRes.secure_url;
+        }
+
+        const category = await prisma.storeCategory.update({
+            where: { id: parseInt(id) },
+            data: {
+                name,
+                description,
+                image: imageUrl,
+                sortOrder: sortOrder !== undefined ? parseInt(sortOrder) : undefined,
+                status,
+            }
+        });
+
+        res.json(category);
+    } catch (error) {
+        console.error("Update category error:", error);
+        res.status(500).json({ message: error.message });
+    }
+};
+
+exports.deleteCategory = async (req, res) => {
+    try {
+        const { id } = req.params;
+        await prisma.storeCategory.delete({
+            where: { id: parseInt(id) }
+        });
+        res.json({ message: 'Category deleted successfully' });
+    } catch (error) {
+        console.error("Delete category error:", error);
         res.status(500).json({ message: error.message });
     }
 };

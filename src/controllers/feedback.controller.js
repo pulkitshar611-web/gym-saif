@@ -4,22 +4,43 @@ const prisma = new PrismaClient();
 exports.getAllFeedback = async (req, res) => {
     try {
         const { tenantId, role } = req.user;
+        const { branchId } = req.query;
         const where = {};
-        if (role !== 'SUPER_ADMIN') {
+
+        if (branchId && branchId !== 'all') {
+            where.tenantId = parseInt(branchId);
+        } else if (role !== 'SUPER_ADMIN') {
             where.tenantId = tenantId;
+        }
+
+        if (role === 'MEMBER') {
+            const memberRaw = await prisma.$queryRaw`SELECT * FROM member WHERE userId = ${req.user.id}`;
+            if (memberRaw && memberRaw.length > 0) {
+                where.memberId = memberRaw[0].id;
+            }
         }
 
         const feedbacks = await prisma.feedback.findMany({
             where,
-            orderBy: { date: 'desc' },
-            include: {
-                member: true
-            }
+            orderBy: { date: 'desc' }
         });
+
+        const memberIds = feedbacks.map(f => f.memberId).filter(Boolean);
+        let membersMap = {};
+        if (memberIds.length > 0) {
+            const members = await prisma.member.findMany({
+                where: { id: { in: memberIds } },
+                select: { id: true, name: true }
+            });
+            members.forEach(m => {
+                membersMap[m.id] = m.name;
+            });
+        }
 
         const formatted = feedbacks.map(f => ({
             id: f.id,
-            member: f.member ? f.member.name : 'Anonymous',
+            memberId: f.memberId,
+            member: membersMap[f.memberId] || 'Anonymous',
             rating: f.rating,
             comment: f.comment,
             status: f.status,

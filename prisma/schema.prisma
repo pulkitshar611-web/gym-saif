@@ -1,5 +1,3 @@
-// schema.prisma
-
 generator client {
   provider = "prisma-client-js"
 }
@@ -9,119 +7,103 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-enum Role {
-  SUPER_ADMIN
-  BRANCH_ADMIN
-  MANAGER
-  STAFF
-  TRAINER
-  MEMBER
-}
-
-// --- CORE MODELS ---
-
 model Tenant {
-  id         Int      @id @default(autoincrement())
-  name       String
-  branchName String?
-  owner      String?
-  email      String?
-  phone      String?
-  location   String?
-  status     String   @default("Active") // Active, Suspended
-  createdAt  DateTime @default(now())
-  updatedAt  DateTime @updatedAt
-
-  users               User[]
-  plans               MembershipPlan[]
-  members             Member[]
-  leads               Lead[]
-  classes             Class[]
-  inventory           Inventory[]
-  lockers             Locker[]
-  equipment           Equipment[]
-  invoices            Invoice[]
-  expenses            Expense[]
-  payroll             Payroll[]
-  devices             Device[]
-  settings            TenantSettings?
-  Announcement        Announcement[]
-  Reward              Reward[]
-  RewardCatalog       RewardCatalog[]
-  Feedback            Feedback[]
-  Attendance          Attendance[]
-  LeaveRequest        LeaveRequest[]
-  trainerAvailability   TrainerAvailability[]
-  dietPlans             DietPlan[]
-  workoutPlans          WorkoutPlan[]
-  serviceRequests       ServiceRequest[]
-  amenities             Amenity[]
-  promoCodes            PromoCode[]
-  conversations         Conversation[]
+  id           Int              @id @default(autoincrement())
+  name         String
+  branchName   String?
+  owner        String?
+  managerName  String?
+  managerEmail String?
+  phone        String?
+  location     String?
+  status       String           @default("Active")
+  createdAt    DateTime         @default(now())
+  updatedAt    DateTime         @updatedAt
+  Attendance   Attendance[]
+  classes      Class[]
+  equipment    Equipment[]
+  expenses     Expense[]
+  inventory    Inventory[]
+  invoices     Invoice[]
+  leads        Lead[]
+  lockers      Locker[]
+  members      Member[]
+  plans        MembershipPlan[]
+  payroll      Payroll[]
+  users        User[]
+  announcements   Announcement[]
+  coupons      Coupon[]
+  storeCategories StoreCategory[]
+  storeProducts   StoreProduct[]
+  storeOrders     StoreOrder[]
+  Amenity         Amenity[]
+  tasks           Task[]
+  expenseCategories ExpenseCategory[]
+  serviceRequests ServiceRequest[]
+  ptPackages      PTPackage[]
+  ptAccounts      PTMemberAccount[]
+  ptSessions      PTSession[]
 
   @@map("tenant")
 }
 
-model User {
-  id       Int     @id @default(autoincrement())
-  email    String  @unique
-  password String
-  name     String
-  phone    String?
-  address  String? @db.Text
-  role     Role
-  status   String  @default("Active")
-  avatar   String?
-  tenantId Int? // Null for Superadmin
-  tenant   Tenant? @relation(fields: [tenantId], references: [id])
+model ExpenseCategory {
+  id          Int      @id @default(autoincrement())
+  tenantId    Int
+  name        String
+  description String?  @db.Text
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  tenant      Tenant   @relation(fields: [tenantId], references: [id])
 
-  // Staff Specific Fields
-  department    String?
-  baseSalary    Decimal? @db.Decimal(10, 2)
-  commission    Decimal? @db.Decimal(5, 2) @default(0.00)
-  accountNumber String?
-  ifsc          String?
-  config        Json? // To store trainerConfig, salesConfig, managerConfig
-  shift         String?  
-  dob           DateTime?
-  documents     Json? // To store document URLs (govtId, contract)
-
-  joinedDate DateTime  @default(now())
-  lastLogin  DateTime?
-
-  // Relations
-  authoredAnnouncements Announcement[]
-  assignedTasks         Task[]               @relation("AssignedTasks")
-  createdTasks          Task[]               @relation("CreatedTasks")
-  assignedMember        Member[]             @relation("TrainerToMember")
-  assignedLeads         Lead[]               @relation("LeadAssignee")
-  attendances           Attendance[]
-  classes               Class[]
-  LeaveRequest          LeaveRequest[]
-  trainerAvailability   TrainerAvailability?
-  trainerDietPlans      DietPlan[]           @relation("TrainerDietPlan")
-  trainerWorkoutPlans   WorkoutPlan[]        @relation("TrainerWorkoutPlan")
-  member                Member[]             @relation("UserToMember")
-  conversations        Conversation[]       @relation("userconversations")
-  sentMessages         ChatMessage[]        @relation("SentMessages")
-
-  @@map("user")
+  @@index([tenantId], map: "expensecat_tenantId_fkey")
+  @@map("expense_category")
 }
 
-// --- SUPERADMIN MODELS ---
+model User {
+  id             Int          @id @default(autoincrement())
+  email          String       @unique
+  password       String
+  name           String
+  phone          String?
+  role           Role
+  status         String       @default("Active")
+  avatar         String?
+  tenantId       Int?
+  joinedDate     DateTime     @default(now())
+  lastLogin      DateTime?
+  address        String?      @db.Text
+  accountNumber  String?
+  baseSalary     Decimal?     @db.Decimal(10, 2)
+  config         String?      @db.LongText
+  department     String?
+  documents      String?      @db.LongText
+  ifsc           String?
+  attendances    Attendance[]
+  classes        Class[]
+  assignedLeads  Lead[]       @relation("LeadAssignee")
+  assignedMember Member[]     @relation("TrainerToMember")
+  assignedTasks  Task[]       @relation("AssignedTasks")
+  createdTasks   Task[]       @relation("CreatedTasks")
+  ptSessions     PTSession[]  @relation("TrainerSessions")
+  tenant         Tenant?      @relation(fields: [tenantId], references: [id])
+
+  @@index([tenantId], map: "user_tenantId_fkey")
+  @@map("user")
+}
 
 model SaaSPlan {
   id          Int      @id @default(autoincrement())
   name        String
-  description String?  @db.Text
   price       Decimal  @db.Decimal(10, 2)
-  period      String // Monthly, Yearly
-  features    Json? // Array of feature flags
-  limits      Json? // Organization limits
-  opsLimits   Json? // Operational limits
-  benefits    Json? // Member benefits
+  period      String
+  features    String?  @db.LongText
   status      String   @default("Active")
+  benefits    String?  @db.LongText
   createdAt   DateTime @default(now())
+  description String?  @db.Text
+  limits      String?  @db.LongText
+  opsLimits   String?  @db.LongText
   updatedAt   DateTime @updatedAt
 
   @@map("saasplan")
@@ -134,8 +116,8 @@ model Subscription {
   subscriber    String
   startDate     DateTime
   endDate       DateTime
-  status        String // Active, Expired, Due
-  paymentStatus String // Paid, Pending, Overdue
+  status        String
+  paymentStatus String
 
   @@map("subscription")
 }
@@ -148,6 +130,7 @@ model AuditLog {
   details        String?  @db.Text
   module         String
   ip             String?
+  status         String   @default("Open")
   createdAt      DateTime @default(now())
 
   @@map("auditlog")
@@ -160,42 +143,31 @@ model WebhookLog {
   method     String
   endpoint   String
   statusCode Int
-  payload    Json?
+  payload    String?  @db.LongText
   createdAt  DateTime @default(now())
 
   @@map("webhooklog")
 }
 
 model SaaSSettings {
-  id             Int     @id @default(autoincrement())
-  siteName       String  @default("Gym CRM")
-  supportEmail   String?
-  contactPhone   String?
-  contactAddress String? @db.Text
-  currency       String  @default("INR")
-  timezone       String  @default("IST")
-
-  // Invoice Global Settings
+  id                 Int     @id @default(autoincrement())
+  siteName           String  @default("Gym CRM")
+  currency           String  @default("INR")
+  timezone           String  @default("IST")
   invoicePrefix      String  @default("INV-")
   invoiceStartNumber Int     @default(1001)
   gstPercent         Decimal @default(18.00) @db.Decimal(5, 2)
-
-  // Booking Global Settings
   bookingEnabled     Boolean @default(true)
   creditsPerBooking  Int     @default(1)
   maxBookingsPerDay  Int     @default(2)
   maxBookingsPerWeek Int     @default(10)
-
-  // Classes specific
-  classCancellationWindow Int     @default(4) // Hours
-  classAdvanceBookingDays Int     @default(7)
-
-  // Benfits specific
-  benefitCancellationWindow Int     @default(24) // Hours
-  benefitAdvanceBookingDays Int     @default(14)
-
+  cancellationWindow Int     @default(4)
+  advanceBookingDays Int     @default(7)
   penaltyEnabled     Boolean @default(true)
   penaltyCredits     Int     @default(1)
+  contactAddress     String? @db.Text
+  contactPhone       String?
+  supportEmail       String?
 
   @@map("saassettings")
 }
@@ -215,316 +187,364 @@ model SaasPayment {
 
 model Device {
   id           Int      @id @default(autoincrement())
-  tenantId     Int?
-  tenant       Tenant?  @relation(fields: [tenantId], references: [id])
   name         String
   type         String
-  ipAddress    String? // Optional IP address
-  status       String   @default("connected") // connected, error, disconnected
-  entriesToday Int      @default(0) // Tracks entries
+  status       String   @default("connected")
   message      String?
+  tenantId     Int?
   lastSeen     DateTime @default(now())
+  entriesToday Int      @default(0)
+  ipAddress    String?
 
   @@map("device")
 }
 
-// --- ADMIN / BRANCH MODELS ---
-
 model Member {
-  id       Int    @id @default(autoincrement())
-  memberId String @unique // MEM-2024-001
-  userId   Int?   @unique
-  tenantId Int
-  tenant   Tenant @relation(fields: [tenantId], references: [id])
-  user     User?  @relation("UserToMember", fields: [userId], references: [id])
-
-  name     String?
-  email    String?
-  phone    String?
-  gender   String?
-  avatar   String? // Cloudinary URL for Face ID
-  benefits Json? // Array of benefit IDs or detailed JSON
-
-  planId     Int?
-  plan       MembershipPlan? @relation(fields: [planId], references: [id])
-  joinDate   DateTime        @default(now())
-  expiryDate DateTime?
-  status     String          @default("Active") // Active, Expired, Inactive
-  isFlagged  Boolean         @default(false)
-  flagReason String?         @db.Text
-
-  trainerId Int?
-  trainer   User? @relation("TrainerToMember", fields: [trainerId], references: [id])
-
-  // Onboarding & Medical
-  medicalHistory String? @db.Text
-  fitnessGoal    String?
-  targetWeight   Decimal? @db.Decimal(5, 2)
-  targetBodyFat  Decimal? @db.Decimal(5, 2)
+  id             Int             @id @default(autoincrement())
+  memberId       String          @unique
+  userId         Int?            @unique
+  tenantId       Int
+  planId         Int?
+  joinDate       DateTime        @default(now())
+  expiryDate     DateTime?
+  status         String          @default("Active")
+  trainerId      Int?
+  avatar         String?
+  benefits       String?         @db.LongText
+  email          String?
   emergencyName  String?
   emergencyPhone String?
-  height         Decimal? @db.Decimal(5, 2)
-
-  bookings Booking[]
-  wallet   Wallet?
-  progress MemberProgress[]
-  Reward   Reward[]
-  Feedback Feedback[]
-  dietPlans DietPlan[]
-  workoutPlans WorkoutPlan[]
-  serviceRequests ServiceRequest[]
-
-  cards          Json?
-
+  fitnessGoal    String?
+  gender         String?
+  medicalHistory String?         @db.Text
+  name           String?
+  phone          String?
+  targetWeight   Decimal?        @db.Decimal(5, 2)
+  targetBodyFat  Decimal?        @db.Decimal(5, 2)
+  dob            String?
+  source         String?
+  referralCode   String?
+  idType         String?
+  idNumber       String?
+  address        String?         @db.Text
+  bookings       Booking[]
   storeOrders    StoreOrder[]
+  lockers        Locker[]
   invoices       Invoice[]
+  attendances    Attendance[]
+  serviceRequests ServiceRequest[]
+  ptAccounts      PTMemberAccount[]
+  ptSessions      PTSession[]
+  plan           MembershipPlan? @relation(fields: [planId], references: [id])
+  tenant         Tenant          @relation(fields: [tenantId], references: [id])
+  trainer        User?           @relation("TrainerToMember", fields: [trainerId], references: [id])
 
+  @@index([planId], map: "member_planId_fkey")
+  @@index([tenantId], map: "member_tenantId_fkey")
+  @@index([trainerId], map: "member_trainerId_fkey")
   @@map("member")
 }
 
-model MembershipPlan {
-  id           Int     @id @default(autoincrement())
-  tenantId     Int
-  tenant       Tenant  @relation(fields: [tenantId], references: [id])
-  name         String
-  price        Decimal @db.Decimal(10, 2)
-  duration     Int // Number (e.g., 12)
-  durationType String  @default("Months") // Months, Days, Years
-  description  String? @db.Text
-
-  // Booking Rules
-  creditsPerBooking  Int @default(1)
-  maxBookingsPerDay  Int @default(1)
-  maxBookingsPerWeek Int @default(7)
-  cancellationWindow Int @default(4) // Hours
-
-  benefits  Json? // Array of { id, limit }
-  status    String   @default("Active")
+model ServiceRequest {
+  id        Int      @id @default(autoincrement())
+  tenantId  Int      @default(1)
+  memberId  Int
+  type      String
+  rawType   String?
+  details   String?  @db.Text
+  status    String   @default("Pending")
+  date      DateTime @default(now())
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+  
+  tenant    Tenant   @relation(fields: [tenantId], references: [id])
+  member    Member   @relation(fields: [memberId], references: [id])
 
-  members Member[]
+  @@index([tenantId], map: "service_request_tenantId_fkey")
+  @@index([memberId], map: "service_request_memberId_fkey")
+  @@map("service_request")
+}
 
+model MembershipPlan {
+  id                 Int      @id @default(autoincrement())
+  tenantId           Int
+  name               String
+  price              Decimal  @db.Decimal(10, 2)
+  duration           Int
+  status             String   @default("Active")
+  benefits           String?  @db.LongText
+  cancellationWindow Int      @default(4)
+  createdAt          DateTime @default(now())
+  creditsPerBooking  Int      @default(1)
+  description        String?  @db.Text
+  durationType       String   @default("Months")
+  maxBookingsPerDay  Int      @default(1)
+  maxBookingsPerWeek Int      @default(7)
+  updatedAt          DateTime @updatedAt
+  members            Member[]
+  tenant             Tenant   @relation(fields: [tenantId], references: [id])
+
+  @@index([tenantId], map: "membershipplan_tenantId_fkey")
   @@map("membershipplan")
 }
 
 model Lead {
-  id        Int        @id @default(autoincrement())
-  tenantId  Int
-  tenant    Tenant     @relation(fields: [tenantId], references: [id])
-  name      String
-  email     String?
-  phone     String
-  source    String?
-  status    String     @default("New") // New, Contacted, Qualified, Converted, Lost
-  followUps FollowUp[]
-  createdAt DateTime   @default(now())
-  updatedAt DateTime   @updatedAt
-
-  // Extended Fields for Inquiry Form
-  gender           String?
+  id               Int        @id @default(autoincrement())
+  tenantId         Int
+  name             String
+  email            String?
+  phone            String
+  source           String?
+  status           String     @default("New")
+  createdAt        DateTime   @default(now())
   age              Int?
-  interests        Json? // Array of strings
+  assignedToId     Int?
   budget           String?
-  preferredContact String? @default("WhatsApp")
+  gender           String?
+  interests        String?    @db.LongText
+  nextFollowUp     DateTime?
+  notes            String?    @db.Text
+  preferredContact String?    @default("WhatsApp")
+  updatedAt        DateTime   @updatedAt
+  followUps        FollowUp[]
+  assignedTo       User?      @relation("LeadAssignee", fields: [assignedToId], references: [id])
+  tenant           Tenant     @relation(fields: [tenantId], references: [id])
 
-  assignedToId Int?
-  assignedTo   User? @relation("LeadAssignee", fields: [assignedToId], references: [id])
-
-  notes        String?   @db.Text
-  nextFollowUp DateTime?
-
+  @@index([assignedToId], map: "lead_assignedToId_fkey")
+  @@index([tenantId], map: "lead_tenantId_fkey")
   @@map("lead")
 }
 
 model FollowUp {
   id        Int       @id @default(autoincrement())
   leadId    Int
-  lead      Lead      @relation(fields: [leadId], references: [id])
   notes     String?
   status    String
   nextDate  DateTime?
   createdAt DateTime  @default(now())
+  lead      Lead      @relation(fields: [leadId], references: [id])
 
+  @@index([leadId], map: "followup_leadId_fkey")
   @@map("followup")
 }
 
 model Class {
   id              Int       @id @default(autoincrement())
   tenantId        Int
-  tenant          Tenant    @relation(fields: [tenantId], references: [id])
   name            String
   description     String?   @db.Text
   trainerId       Int?
-  trainer         User?     @relation(fields: [trainerId], references: [id])
-  schedule        Json // Days and times
-  duration        String?
+  schedule        String    @db.LongText
   maxCapacity     Int
-  status          String    @default("Scheduled")
+  duration        String?
   location        String?
   requiredBenefit String?
+  status          String    @default("Scheduled")
   bookings        Booking[]
+  tenant          Tenant    @relation(fields: [tenantId], references: [id])
+  trainer         User?     @relation(fields: [trainerId], references: [id])
 
+  @@index([tenantId], map: "class_tenantId_fkey")
+  @@index([trainerId], map: "class_trainerId_fkey")
   @@map("class")
 }
 
 model Booking {
   id       Int      @id @default(autoincrement())
   memberId Int
-  member   Member   @relation(fields: [memberId], references: [id])
   classId  Int
-  class    Class    @relation(fields: [classId], references: [id])
   date     DateTime
-  status   String   @default("Upcoming") // Upcoming, Completed, Cancelled
+  status   String   @default("Upcoming")
+  class    Class    @relation(fields: [classId], references: [id])
+  member   Member   @relation(fields: [memberId], references: [id])
 
+  @@index([classId], map: "booking_classId_fkey")
+  @@index([memberId], map: "booking_memberId_fkey")
   @@map("booking")
 }
 
 model Inventory {
   id           Int     @id @default(autoincrement())
   tenantId     Int?
-  tenant       Tenant? @relation(fields: [tenantId], references: [id])
   itemName     String
   category     String
   quantity     Int
   unit         String
   minThreshold Int     @default(5)
   status       String  @default("In Stock")
+  tenant       Tenant? @relation(fields: [tenantId], references: [id])
 
+  @@index([tenantId], map: "inventory_tenantId_fkey")
   @@map("inventory")
 }
 
 model Locker {
-  id           Int     @id @default(autoincrement())
+  id           Int      @id @default(autoincrement())
   tenantId     Int?
-  tenant       Tenant? @relation(fields: [tenantId], references: [id])
   number       String
-  status       String    @default("Available") // Available, Occupied, Under Maintenance
+  status       String   @default("Available") // Available, Assigned, Maintenance, Reserved
+  size         String   @default("Medium") // Small, Medium, Large
+  area         String?
+  notes        String?  @db.Text
+  isChargeable Boolean  @default(false)
   assignedToId Int?
-  expiryDate   DateTime?
-  notes        String?   @db.Text
+  assignedTo   Member?  @relation(fields: [assignedToId], references: [id])
+  tenant       Tenant?  @relation(fields: [tenantId], references: [id])
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
 
+  @@index([tenantId], map: "locker_tenantId_fkey")
+  @@index([assignedToId], map: "locker_memberId_fkey")
   @@map("locker")
 }
 
 model Equipment {
   id             Int                  @id @default(autoincrement())
   tenantId       Int?
-  tenant         Tenant?              @relation(fields: [tenantId], references: [id])
   name           String
-  brand          String?
-  model          String?
-  serialNumber   String?
-  category       String?
-  location       String?
-  purchaseDate   DateTime?
-  warrantyExpiry DateTime?
-  status         String               @default("Operational") // Operational, Maintenance, Out of Order
+  status         String               @default("Operational")
   lastService    DateTime?
   nextService    DateTime?
+  brand          String?
+  category       String?
+  location       String?
+  model          String?
+  purchaseDate   DateTime?
+  purchasePrice  Decimal?             @db.Decimal(10, 2)
+  serialNumber   String?
+  warrantyExpiry DateTime?
+  tenant         Tenant?              @relation(fields: [tenantId], references: [id])
   maintenance    MaintenanceRequest[]
 
+  @@index([tenantId], map: "equipment_tenantId_fkey")
   @@map("equipment")
 }
 
 model MaintenanceRequest {
   id          Int       @id @default(autoincrement())
   equipmentId Int
-  equipment   Equipment @relation(fields: [equipmentId], references: [id])
   issue       String
-  priority    String // Low, Medium, High
+  description String?   @db.Text
+  priority    String
   status      String    @default("Pending")
+  cost        Decimal?  @db.Decimal(10, 2) @default(0.00)
   createdAt   DateTime  @default(now())
+  completedAt DateTime?
+  equipment   Equipment @relation(fields: [equipmentId], references: [id])
 
+  @@index([equipmentId], map: "maintenancerequest_equipmentId_fkey")
   @@map("maintenancerequest")
 }
 
 model Invoice {
-  id            Int       @id @default(autoincrement())
+  id            Int           @id @default(autoincrement())
   tenantId      Int
-  tenant        Tenant    @relation(fields: [tenantId], references: [id])
-  invoiceNumber String    @unique
-  memberId      Int
-  amount        Decimal   @db.Decimal(10, 2)
-  paymentMode   String    @default("Cash") // Cash, UPI, Card
-  status        String    @default("Unpaid") // Paid, Unpaid, Partial, Cancelled
+  invoiceNumber String        @unique
+  memberId      Int?
+  subtotal      Decimal       @db.Decimal(10, 2) @default(0.00)
+  taxRate       Decimal       @db.Decimal(10, 2) @default(0.00)
+  taxAmount     Decimal       @db.Decimal(10, 2) @default(0.00)
+  discount      Decimal       @db.Decimal(10, 2) @default(0.00)
+  amount        Decimal       @db.Decimal(10, 2)
+  status        String        @default("Unpaid")
   dueDate       DateTime
   paidDate      DateTime?
-  member        Member    @relation(fields: [memberId], references: [id])
+  paymentMode   String        @default("Cash")
+  notes         String?       @db.Text
+  items         InvoiceItem[]
+  member        Member?       @relation(fields: [memberId], references: [id])
+  tenant        Tenant        @relation(fields: [tenantId], references: [id])
 
+  @@index([tenantId], map: "invoice_tenantId_fkey")
   @@map("invoice")
+}
+
+model InvoiceItem {
+  id          Int     @id @default(autoincrement())
+  invoiceId   Int
+  description String
+  quantity    Int
+  rate        Decimal @db.Decimal(10, 2)
+  amount      Decimal @db.Decimal(10, 2)
+  invoice     Invoice @relation(fields: [invoiceId], references: [id])
+
+  @@index([invoiceId], map: "invoiceitem_invoiceId_fkey")
+  @@map("invoice_item")
 }
 
 model Expense {
   id       Int      @id @default(autoincrement())
   tenantId Int
-  tenant   Tenant   @relation(fields: [tenantId], references: [id])
   title    String
   category String
   amount   Decimal  @db.Decimal(10, 2)
   date     DateTime
   status   String   @default("Paid")
-  notes    String?  @db.Text
   addedBy  String?
+  notes    String?  @db.Text
+  tenant   Tenant   @relation(fields: [tenantId], references: [id])
 
+  @@index([tenantId], map: "expense_tenantId_fkey")
   @@map("expense")
 }
 
 model Payroll {
   id       Int     @id @default(autoincrement())
   tenantId Int
-  tenant   Tenant  @relation(fields: [tenantId], references: [id])
   staffId  Int
-  amount      Decimal @db.Decimal(10, 2)
-  incentives  Decimal @default(0.00) @db.Decimal(10, 2)
-  deductions  Decimal @default(0.00) @db.Decimal(10, 2)
-  month       Int
-  year        Int
-  status      String  @default("Pending") // Pending, Processed
+  amount   Decimal @db.Decimal(10, 2)
+  month    Int
+  year     Int
+  status   String  @default("Pending")
+  tenant   Tenant  @relation(fields: [tenantId], references: [id])
 
+  @@index([tenantId], map: "payroll_tenantId_fkey")
   @@map("payroll")
 }
 
 model Attendance {
   id       Int       @id @default(autoincrement())
-  tenantId Int       @default(1)
-  tenant   Tenant    @relation(fields: [tenantId], references: [id])
-  userId   Int
-  user     User      @relation(fields: [userId], references: [id])
-  date     DateTime  @default(now()) @db.Date
+  userId   Int?
+  memberId Int?
   checkIn  DateTime?
   checkOut DateTime?
-  status   String    @default("Present") // Present, Late, Absent, On Leave
-  type     String // Member, Staff, Trainer
+  type     String
+  date     DateTime  @default(now()) @db.Date
+  status   String    @default("Present")
+  tenantId Int       @default(1)
+  tenant   Tenant    @relation(fields: [tenantId], references: [id])
+  user     User?     @relation(fields: [userId], references: [id])
+  member   Member?   @relation(fields: [memberId], references: [id])
 
+  @@index([tenantId], map: "attendance_tenantId_fkey")
+  @@index([userId], map: "attendance_userId_fkey")
+  @@index([memberId], map: "attendance_memberId_fkey")
   @@map("attendance")
 }
 
 model LeaveRequest {
   id        Int      @id @default(autoincrement())
   tenantId  Int      @default(1)
-  tenant    Tenant   @relation(fields: [tenantId], references: [id])
   userId    Int
-  user      User     @relation(fields: [userId], references: [id])
-  type      String   @default("Vacation") // Vacation, Sick, Personal
+  type      String   @default("Vacation")
   startDate DateTime
   endDate   DateTime
   reason    String   @db.Text
-  status    String   @default("Pending") // Pending, Approved, Rejected
+  status    String   @default("Pending")
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  @@index([tenantId], map: "leave_request_tenantId_fkey")
+  @@index([userId], map: "leave_request_userId_fkey")
   @@map("leave_request")
 }
 
 model TrainerAvailability {
   id             Int      @id @default(autoincrement())
   tenantId       Int      @default(1)
-  tenant         Tenant   @relation(fields: [tenantId], references: [id])
   trainerId      Int      @unique
-  trainer        User     @relation(fields: [trainerId], references: [id])
-  weeklySchedule Json // Stores the array of availability objects
-  preferences    Json // Stores preferences (e.g. instantBooking)
+  weeklySchedule String   @db.LongText
+  preferences    String   @db.LongText
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
 
@@ -535,22 +555,26 @@ model Task {
   id           Int      @id @default(autoincrement())
   title        String
   assignedToId Int
-  assignedTo   User     @relation("AssignedTasks", fields: [assignedToId], references: [id])
   creatorId    Int
-  creator      User     @relation("CreatedTasks", fields: [creatorId], references: [id])
   priority     String
   dueDate      DateTime
   status       String   @default("Pending")
+  description  String?  @db.Text
+  tenantId     Int?
 
+  assignedTo   User     @relation("AssignedTasks", fields: [assignedToId], references: [id])
+  creator      User     @relation("CreatedTasks", fields: [creatorId], references: [id])
+  tenant       Tenant?  @relation(fields: [tenantId], references: [id])
+
+  @@index([assignedToId], map: "Task_assignedToId_fkey")
+  @@index([creatorId], map: "Task_creatorId_fkey")
   @@map("task")
 }
 
 model Wallet {
-  id           Int           @id @default(autoincrement())
-  memberId     Int           @unique
-  member       Member        @relation(fields: [memberId], references: [id])
-  balance      Decimal       @default(0) @db.Decimal(10, 2)
-  transactions Transaction[]
+  id       Int     @id @default(autoincrement())
+  memberId Int     @unique
+  balance  Decimal @default(0.00) @db.Decimal(10, 2)
 
   @@map("wallet")
 }
@@ -558,69 +582,98 @@ model Wallet {
 model Transaction {
   id          Int      @id @default(autoincrement())
   walletId    Int
-  wallet      Wallet   @relation(fields: [walletId], references: [id])
   amount      Decimal  @db.Decimal(10, 2)
-  type        String // Credit, Debit
+  type        String
   description String?
   createdAt   DateTime @default(now())
 
+  @@index([walletId], map: "Transaction_walletId_fkey")
   @@map("transaction")
 }
 
 model MemberProgress {
   id           Int      @id @default(autoincrement())
   memberId     Int
-  member       Member   @relation(fields: [memberId], references: [id])
   weight       Decimal? @db.Decimal(5, 2)
   bodyFat      Decimal? @db.Decimal(5, 2)
-  measurements Json?
-  photos       Json?
   notes        String?
-  height       Decimal? @db.Decimal(5, 2)
   date         DateTime @default(now())
+  measurements String?  @db.LongText
+  photos       String?  @db.LongText
 
+  @@index([memberId], map: "MemberProgress_memberId_fkey")
   @@map("memberprogress")
 }
 
 model Announcement {
   id         Int      @id @default(autoincrement())
-  tenantId   Int?
-  tenant     Tenant?  @relation(fields: [tenantId], references: [id])
+  tenantId   Int      @default(1)
+  authorId   Int
   title      String
   content    String   @db.Text
-  priority   String   @default("medium") // high, medium, low
-  targetRole String   @default("all") // all, member, trainer, staff
-  authorId   Int
-  author     User     @relation(fields: [authorId], references: [id])
+  targetRole String   @default("all")
+  priority   Int      @default(0)
+  status     String   @default("Active")
   createdAt  DateTime @default(now())
+  updatedAt  DateTime @default(now()) @updatedAt
+  tenant     Tenant   @relation(fields: [tenantId], references: [id])
 
+  @@index([authorId], map: "Announcement_authorId_fkey")
   @@map("announcement")
+}
+
+model MessageTemplate {
+  id        Int      @id @default(autoincrement())
+  tenantId  Int      @default(1)
+  name      String
+  content   String   @db.LongText
+  channel   String   // WhatsApp, SMS, Email
+  category  String   // Welcome, Reminder, Promo, etc.
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("message_template")
+}
+
+model CommunicationLog {
+  id        Int      @id @default(autoincrement())
+  tenantId  Int      @default(1)
+  senderId  Int?
+  memberId  Int?
+  channel   String   // WhatsApp, SMS, Email
+  message   String   @db.LongText
+  status    String   @default("Sent") // Sent, Failed, Pending
+  createdAt DateTime @default(now())
+
+  @@map("communication_log")
 }
 
 model TenantSettings {
   id              Int     @id @default(autoincrement())
   tenantId        Int     @unique
-  tenant          Tenant  @relation(fields: [tenantId], references: [id])
   logo            String?
   timezone        String  @default("UTC")
   currency        String  @default("USD")
   whatsappEnabled Boolean @default(false)
-  openingHours    String?
-  wifiPassword    String?
-
-  // Developer & Integration Settings
-  webhooks           Json? // { payment: '', whatsapp: '', attendance: '', secret: '' }
+  fiscalYearStart String  @default("April")
   
-  // Payment Gateways & APIs
-  apiKeys            Json? // { razorpay: { key: '', secret: '' }, sms: '', whatsapp: '' }
-
-  // Invoice Settings
-  invoicePrefix      String  @default("INV-")
-  invoiceStartNumber Int     @default(1001)
-  gstPercent         Decimal @default(18.00) @db.Decimal(5, 2)
+  // Email Notifications
+  membershipReminders Boolean @default(true)
+  paymentReceipts     Boolean @default(true)
+  classNotifications  Boolean @default(true)
+  announcements       Boolean @default(true)
   
-  // Message Templates
-  messageTemplates Json? // Array of { id, name, content, trigger }
+  // System Alerts
+  lowStockAlerts      Boolean @default(true)
+  newLeadAlerts       Boolean @default(true)
+  paymentAlerts       Boolean @default(true)
+  taskReminders       Boolean @default(true)
+
+  // Security Settings
+  twoFactorAuth       Boolean @default(false)
+  sessionTimeout      Boolean @default(true)
+  sessionDuration     String  @default("8")
+  loginAlerts         Boolean @default(true)
 
   @@map("tenantsettings")
 }
@@ -628,9 +681,7 @@ model TenantSettings {
 model Reward {
   id          Int      @id @default(autoincrement())
   tenantId    Int?
-  tenant      Tenant?  @relation(fields: [tenantId], references: [id])
   memberId    Int?
-  member      Member?  @relation(fields: [memberId], references: [id])
   name        String   @default("Reward")
   points      Int      @default(0)
   description String   @default("")
@@ -639,69 +690,31 @@ model Reward {
   @@map("reward")
 }
 
-model RewardCatalog {
-  id          Int      @id @default(autoincrement())
-  tenantId    Int
-  tenant      Tenant   @relation(fields: [tenantId], references: [id])
-  name        String
-  points      Int
-  description String   @db.Text
-  status      String   @default("Active")
-
-  @@map("rewardcatalog")
-}
-
 model Feedback {
   id       Int      @id @default(autoincrement())
   tenantId Int?
-  tenant   Tenant?  @relation(fields: [tenantId], references: [id])
   memberId Int?
-  member   Member?  @relation(fields: [memberId], references: [id])
   rating   Int
   comment  String   @db.Text
-  status   String   @default("Pending") // Pending, Addressed
+  status   String   @default("Pending")
   date     DateTime @default(now())
 
   @@map("feedback")
 }
 
-model ServiceRequest {
-  id        Int      @id @default(autoincrement())
-  tenantId  Int      @default(1)
-  tenant    Tenant   @relation(fields: [tenantId], references: [id])
-  memberId  Int
-  member    Member   @relation(fields: [memberId], references: [id])
-  
-  type      String   // Freeze Request, Trainer Change, etc.
-  details   String?  @db.Text
-  status    String   @default("Pending") // Pending, Approved, Rejected
-  rawType   String?  // Freeze, TrainerChange, General
-  date      DateTime @default(now())
-  
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  @@map("service_request")
-}
-
 model DietPlan {
   id        String   @id @default(uuid())
   tenantId  Int      @default(1)
-  tenant    Tenant   @relation(fields: [tenantId], references: [id])
   trainerId Int
-  trainer   User     @relation("TrainerDietPlan", fields: [trainerId], references: [id])
   clientId  Int
-  client    Member   @relation(fields: [clientId], references: [id])
-  
   name      String
   target    String
   duration  String
   calories  Int
-  macros    Json     // { protein, carbs, fats }
-  meals     Json     // array of meal objects
+  macros    String   @db.LongText
+  meals     String   @db.LongText
   notes     String?  @db.Text
   status    String   @default("Active")
-  
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -711,12 +724,8 @@ model DietPlan {
 model WorkoutPlan {
   id             String   @id @default(uuid())
   tenantId       Int      @default(1)
-  tenant         Tenant   @relation(fields: [tenantId], references: [id])
   trainerId      Int
-  trainer        User     @relation("TrainerWorkoutPlan", fields: [trainerId], references: [id])
   clientId       Int
-  client         Member   @relation(fields: [clientId], references: [id])
-  
   name           String
   level          String   @default("Beginner")
   duration       String
@@ -725,120 +734,199 @@ model WorkoutPlan {
   timePerSession String
   intensity      String
   status         String   @default("Active")
-  days           Json     // object containing monday-sunday routines
-  
+  days           String   @db.LongText
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
 
   @@map("workout_plan")
 }
 
-model StoreProduct {
-  id            Int      @id @default(autoincrement())
-  tenantId      Int      @default(1)
-  name          String
-  sku           String?
-  category      String
-  price         Decimal  @db.Decimal(10, 2)
-  originalPrice Decimal? @db.Decimal(10, 2)
-  rating        Decimal? @db.Decimal(2, 1) @default(5.0)
-  image         String?  @db.Text
-  description   String?  @db.Text
-  stock         Int      @default(0)
-  status        String   @default("Active") // Active, Out of Stock, Inactive
+model Coupon {
+  id           Int      @id @default(autoincrement())
+  tenantId     Int?
+  code         String   @unique
+  description  String?  @db.Text
+  type         String   @default("Percentage") // Percentage or Fixed
+  value        Decimal  @db.Decimal(10, 2)
+  minPurchase  Decimal? @db.Decimal(10, 2) @default(0.00)
+  maxUses      Int?     @default(0) // 0 for unlimited
+  usedCount    Int      @default(0)
+  startDate    DateTime @default(now())
+  endDate      DateTime?
+  status       String   @default("Active")
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  tenant       Tenant?  @relation(fields: [tenantId], references: [id])
 
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
-  
+  @@index([tenantId], map: "coupon_tenantId_fkey")
+  @@map("coupon")
+}
+
+model StoreCategory {
+  id          Int      @id @default(autoincrement())
+  tenantId    Int?
+  name        String
+  description String?  @db.Text
+  image       String?
+  sortOrder   Int      @default(0)
+  status      String   @default("Active")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  products    StoreProduct[]
+  tenant      Tenant?  @relation(fields: [tenantId], references: [id])
+
+  @@index([tenantId], map: "storecategory_tenantId_fkey")
+  @@map("store_category")
+}
+
+model StoreProduct {
+  id            Int         @id @default(autoincrement())
+  tenantId      Int?
+  categoryId    Int?
+  name          String
+  sku           String?     @unique
+  category      String?     
+  price         Decimal     @db.Decimal(10, 2)
+  originalPrice Decimal?    @db.Decimal(10, 2)
+  costPrice     Decimal?    @db.Decimal(10, 2)
+  taxRate       Decimal?    @db.Decimal(5, 2) @default(0.00)
+  stock         Int         @default(0)
+  status        String      @default("Active")
+  description   String?     @db.Text
+  image         String?
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+  categoryRel   StoreCategory? @relation(fields: [categoryId], references: [id])
+  tenant        Tenant?     @relation(fields: [tenantId], references: [id])
   orderItems    StoreOrderItem[]
 
+  @@index([tenantId], map: "storeproduct_tenantId_fkey")
+  @@index([categoryId], map: "storeproduct_categoryId_fkey")
   @@map("store_product")
 }
 
 model StoreOrder {
-  id         String   @id @default(uuid())
-  tenantId   Int      @default(1)
-  memberId   Int
-  member     Member   @relation(fields: [memberId], references: [id])
-  itemsCount Int      @default(0)
-  total      Decimal  @db.Decimal(10, 2)
-  status     String   @default("Processing") // Processing, Delivered, Cancelled
-  date       DateTime @default(now())
+  id          Int              @id @default(autoincrement())
+  tenantId    Int?
+  memberId    Int?
+  total       Decimal          @db.Decimal(10, 2)
+  itemsCount  Int              @default(0)
+  status      String           @default("Processing")
+  date        DateTime         @default(now())
+  guestName   String?
+  guestPhone  String?
+  guestEmail  String?
+  items       StoreOrderItem[]
+  member      Member?          @relation(fields: [memberId], references: [id])
+  tenant      Tenant?          @relation(fields: [tenantId], references: [id])
 
-  items      StoreOrderItem[]
-
-  createdAt  DateTime @default(now())
-  updatedAt  DateTime @updatedAt
-
+  @@index([tenantId], map: "storeorder_tenantId_fkey")
+  @@index([memberId], map: "storeorder_memberId_fkey")
   @@map("store_order")
 }
 
 model StoreOrderItem {
   id         Int          @id @default(autoincrement())
-  orderId    String
-  order      StoreOrder   @relation(fields: [orderId], references: [id])
+  orderId    Int
   productId  Int
+  quantity   Int
+  priceAtBuy Decimal      @db.Decimal(10, 2)
+  order      StoreOrder   @relation(fields: [orderId], references: [id])
   product    StoreProduct @relation(fields: [productId], references: [id])
-  quantity   Int          @default(1)
-  priceAtBuy Decimal      @db.Decimal(10, 2) // Stored to prevent historical price changes from affecting past orders
 
+  @@index([orderId], map: "storeorderitem_orderId_fkey")
+  @@index([productId], map: "storeorderitem_productId_fkey")
   @@map("store_order_item")
 }
 
 model Amenity {
   id          Int      @id @default(autoincrement())
   tenantId    Int
-  tenant      Tenant   @relation(fields: [tenantId], references: [id])
   name        String
   description String?  @db.Text
-  icon        String? // Name of the icon (lucide-react)
-  status      String   @default("Active") // Active, Inactive
-  gender      String   @default("UNISEX") // MALE, FEMALE, UNISEX
+  icon        String?
+  status      String   @default("Active")
+  gender      String   @default("UNISEX")
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
+  tenant      Tenant   @relation(fields: [tenantId], references: [id])
 
+  @@index([tenantId], map: "amenity_tenantId_fkey")
   @@map("amenity")
 }
 
-model PromoCode {
-  id          Int       @id @default(autoincrement())
-  tenantId    Int       @default(1)
-  tenant      Tenant    @relation(fields: [tenantId], references: [id])
-  code        String    @unique
-  type        String    @default("PERCENTAGE") // PERCENTAGE, FLAT
-  value       Decimal   @db.Decimal(10, 2)
-  status      String    @default("Active") // Active, Inactive
-  expiryDate  DateTime?
-  usageLimit  Int?
-  usedCount   Int       @default(0)
-  createdAt   DateTime  @default(now())
-  updatedAt   DateTime  @updatedAt
+model PTPackage {
+  id            Int               @id @default(autoincrement())
+  tenantId      Int
+  name          String
+  sessionType   String            @default("Fixed Sessions")
+  totalSessions Int
+  price         Decimal           @db.Decimal(10, 2)
+  gstPercent    Decimal           @db.Decimal(5, 2) @default(18.00)
+  gstInclusive  Boolean           @default(false)
+  validityDays  Int               @default(90)
+  description   String?           @db.Text
+  status        String            @default("Active")
+  createdAt     DateTime          @default(now())
+  updatedAt     DateTime          @updatedAt
+  tenant        Tenant            @relation(fields: [tenantId], references: [id])
+  accounts      PTMemberAccount[]
 
-  @@map("promo_code")
+  @@map("pt_package")
 }
 
-model Conversation {
-  id           String        @id @default(uuid())
-  tenantId     Int?          // Optional: if null, it's a cross-tenant chat (e.g. Superadmin to Branch Admin)
-  tenant       Tenant?       @relation(fields: [tenantId], references: [id])
-  participants User[]        @relation("userconversations")
-  messages     ChatMessage[]
-  lastMessage  String?       @db.Text
-  updatedAt    DateTime      @updatedAt
-  createdAt    DateTime      @default(now())
+model PTMemberAccount {
+  id                Int          @id @default(autoincrement())
+  tenantId          Int
+  memberId          Int
+  packageId         Int
+  totalSessions     Int
+  remainingSessions Int
+  expiryDate        DateTime
+  status            String       @default("Active")
+  createdAt         DateTime     @default(now())
+  updatedAt         DateTime     @updatedAt
+  member            Member       @relation(fields: [memberId], references: [id])
+  package           PTPackage    @relation(fields: [packageId], references: [id])
+  sessions          PTSession[]
+  tenant            Tenant       @relation(fields: [tenantId], references: [id])
 
-  @@map("conversation")
+  @@index([memberId], map: "pt_member_account_memberId_fkey")
+  @@index([packageId], map: "pt_member_account_packageId_fkey")
+  @@index([tenantId], map: "pt_member_account_tenantId_fkey")
+  @@map("pt_member_account")
 }
 
-model ChatMessage {
-  id             String       @id @default(uuid())
-  conversationId String
-  conversation   Conversation @relation(fields: [conversationId], references: [id])
-  senderId       Int
-  sender         User         @relation("SentMessages", fields: [senderId], references: [id])
-  content        String       @db.Text
-  isRead         Boolean      @default(false)
-  createdAt      DateTime     @default(now())
+model PTSession {
+  id          Int              @id @default(autoincrement())
+  tenantId    Int
+  memberId    Int
+  trainerId   Int
+  ptAccountId Int?
+  date        DateTime
+  time        String?
+  duration    Int              @default(60)
+  notes       String?          @db.Text
+  status      String           @default("Completed")
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
+  member      Member           @relation(fields: [memberId], references: [id])
+  trainer     User             @relation("TrainerSessions", fields: [trainerId], references: [id])
+  ptAccount   PTMemberAccount? @relation(fields: [ptAccountId], references: [id])
+  tenant      Tenant           @relation(fields: [tenantId], references: [id])
 
-  @@map("chat_message")
+  @@index([memberId], map: "pt_session_memberId_fkey")
+  @@index([trainerId], map: "pt_session_trainerId_fkey")
+  @@index([ptAccountId], map: "pt_session_ptAccountId_fkey")
+  @@index([tenantId], map: "pt_session_tenantId_fkey")
+  @@map("pt_session")
+}
+
+enum Role {
+  SUPER_ADMIN
+  BRANCH_ADMIN
+  MANAGER
+  STAFF
+  TRAINER
+  MEMBER
 }

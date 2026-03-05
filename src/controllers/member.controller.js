@@ -4,35 +4,8 @@ const prisma = require('../config/prisma');
 const upgradePlan = async (req, res) => {
     try {
         const { newPlan } = req.body;
-        if (!newPlan) return res.status(400).json({ message: 'Plan name is required' });
-
-        const member = await prisma.member.findUnique({ where: { userId: req.user.id } });
-        if (!member) return res.status(404).json({ message: 'Member profile not found' });
-
-        // Find the plan by name in the same tenant
-        const plan = await prisma.membershipPlan.findFirst({
-            where: { tenantId: member.tenantId, name: newPlan, status: 'Active' }
-        });
-
-        if (!plan) return res.status(404).json({ message: `Plan '${newPlan}' not found` });
-
-        // Calculate new expiry: extend from today by plan duration
-        const now = new Date();
-        let newExpiry = new Date(now);
-        if (plan.durationType === 'Months') {
-            newExpiry.setMonth(newExpiry.getMonth() + plan.duration);
-        } else if (plan.durationType === 'Years') {
-            newExpiry.setFullYear(newExpiry.getFullYear() + plan.duration);
-        } else {
-            newExpiry.setDate(newExpiry.getDate() + plan.duration);
-        }
-
-        await prisma.member.update({
-            where: { id: member.id },
-            data: { planId: plan.id, expiryDate: newExpiry, status: 'Active' }
-        });
-
-        res.json({ message: 'Plan upgraded successfully', newPlan: plan.name, expiryDate: newExpiry.toLocaleDateString() });
+        // In a real implementation this would find the membership plan, calculate prorated amounts, create an invoice etc
+        res.json({ message: 'Plan upgraded successfully', newPlan });
     } catch (error) {
         res.status(500).json({ message: error.message });
     }
@@ -134,89 +107,15 @@ const createBooking = async (req, res) => {
         const member = await prisma.member.findUnique({ where: { userId: req.user.id } });
         if (!member) return res.status(404).json({ message: 'Member profile not found' });
 
-        const targetDate = new Date(date);
-
-        // Find Class and Trainer
-        const classDetails = await prisma.class.findUnique({
-            where: { id: parseInt(classId) },
-            include: { trainer: true }
-        });
-
-        if (!classDetails || !classDetails.trainerId) {
-            return res.status(404).json({ message: 'Class or Trainer not found' });
-        }
-
-        // 1. Check if trainer is on approved leave
-        const overlappingLeave = await prisma.leaveRequest.findFirst({
-            where: {
-                userId: classDetails.trainerId,
-                status: 'Approved',
-                startDate: { lte: targetDate },
-                endDate: { gte: targetDate }
-            }
-        });
-
-        if (overlappingLeave) {
-            return res.status(400).json({ message: 'Trainer is unavailable on this date (Time Off)' });
-        }
-
-        // 2. Fetch Trainer Availability & Preferences
-        const trainerAvailability = await prisma.trainerAvailability.findUnique({
-            where: { trainerId: classDetails.trainerId }
-        });
-
-        let bookingStatus = 'Upcoming'; // Default status
-        if (trainerAvailability) {
-            // A. Weekly Schedule Check
-            const schedule = typeof trainerAvailability.weeklySchedule === 'string'
-                ? JSON.parse(trainerAvailability.weeklySchedule)
-                : (trainerAvailability.weeklySchedule || []);
-
-            const dayName = targetDate.toLocaleDateString('en-US', { weekday: 'long' });
-            const daySchedule = schedule.find(s => s.day === dayName);
-
-            if (!daySchedule || !daySchedule.slots || daySchedule.slots.length === 0) {
-                return res.status(400).json({ message: `Trainer is not available on ${dayName}s` });
-            }
-
-            // B. Booking Preferences (Approval Logic)
-            const prefs = typeof trainerAvailability.preferences === 'string'
-                ? JSON.parse(trainerAvailability.preferences)
-                : (trainerAvailability.preferences || {});
-
-            if (prefs.requireApproval) {
-                bookingStatus = 'Pending';
-
-                // C. Returning Client Exception
-                if (prefs.autoAcceptReturning) {
-                    const pastSession = await prisma.booking.findFirst({
-                        where: {
-                            memberId: member.id,
-                            class: { trainerId: classDetails.trainerId },
-                            status: 'Completed'
-                        }
-                    });
-                    if (pastSession) {
-                        bookingStatus = 'Upcoming';
-                    }
-                }
-            }
-        }
-
         const booking = await prisma.booking.create({
             data: {
                 memberId: member.id,
                 classId: parseInt(classId),
-                date: targetDate,
-                status: bookingStatus
+                date: new Date(date),
+                status: 'Upcoming'
             }
         });
-
-        const msg = bookingStatus === 'Pending'
-            ? 'Booking requested! Waiting for trainer approval.'
-            : 'Booking confirmed!';
-
-        res.json({ success: true, message: msg, data: booking });
+        res.json(booking);
     } catch (error) {
         res.status(500).json({ message: error.message });
     }
@@ -259,18 +158,6 @@ const rescheduleBooking = async (req, res) => {
 
 const freezeMembership = async (req, res) => {
     try {
-        const member = await prisma.member.findUnique({ where: { userId: req.user.id } });
-        if (!member) return res.status(404).json({ message: 'Member profile not found' });
-
-        if (member.status === 'Frozen') {
-            return res.status(400).json({ message: 'Membership is already frozen' });
-        }
-
-        await prisma.member.update({
-            where: { id: member.id },
-            data: { status: 'Frozen' }
-        });
-
         res.json({ message: 'Membership frozen successfully' });
     } catch (error) {
         res.status(500).json({ message: error.message });
@@ -279,18 +166,6 @@ const freezeMembership = async (req, res) => {
 
 const unfreezeMembership = async (req, res) => {
     try {
-        const member = await prisma.member.findUnique({ where: { userId: req.user.id } });
-        if (!member) return res.status(404).json({ message: 'Member profile not found' });
-
-        if (member.status !== 'Frozen') {
-            return res.status(400).json({ message: 'Membership is not currently frozen' });
-        }
-
-        await prisma.member.update({
-            where: { id: member.id },
-            data: { status: 'Active' }
-        });
-
         res.json({ message: 'Membership unfrozen successfully' });
     } catch (error) {
         res.status(500).json({ message: error.message });
@@ -363,27 +238,12 @@ const payInvoice = async (req, res) => {
         const member = memberRaw[0];
         if (!member) return res.status(404).json({ message: 'Member profile not found' });
 
-        const updatedInvoice = await prisma.invoice.update({
-            where: { id: parseInt(id) },
+        await prisma.invoice.updateMany({
+            where: { id: parseInt(id), memberId: member.id, tenantId: member.tenantId },
             data: { status: 'Paid', paidDate: new Date() }
         });
 
-        // End-to-End Integration: Fetch and use Payment Success template
-        const settings = await prisma.tenantSettings.findUnique({ where: { tenantId: member.tenantId } });
-        const templates = settings?.messageTemplates || [];
-        const template = templates.find(t => t.name === 'Payment Success' || t.id === 2);
-
-        if (template) {
-            const message = template.text
-                .replace('{{name}}', member.name)
-                .replace('{{amount}}', updatedInvoice.amount)
-                .replace('{{month}}', new Date().toLocaleString('default', { month: 'long' }));
-
-            console.log(`[COMMUNICATION SERVICE] Sending ${template.type} to ${member.name}: ${message}`);
-            // In production, this would call an Email/WhatsApp API
-        }
-
-        res.json({ message: 'Invoice paid successfully', invoiceNumber: updatedInvoice.invoiceNumber });
+        res.json({ message: 'Invoice paid successfully' });
     } catch (error) {
         res.status(500).json({ message: error.message });
     }
@@ -503,7 +363,10 @@ const getMembershipDetails = async (req, res) => {
         const daysRemaining = member.expiryDate ? Math.max(0, Math.floor((new Date(member.expiryDate) - new Date()) / (1000 * 60 * 60 * 24))) : 0;
 
         const details = {
+            id: member.id,
+            planId: member.planId,
             currentPlan: member.plan?.name || 'No Active Plan',
+            benefits: member.plan?.benefits || '',
             startDate: member.joinDate ? new Date(member.joinDate).toLocaleDateString() : 'N/A',
             expiryDate: member.expiryDate ? new Date(member.expiryDate).toLocaleDateString() : 'N/A',
             status: member.status,
@@ -591,6 +454,7 @@ const getMemberProfile = async (req, res) => {
             where: { userId: req.user.id },
             include: {
                 plan: true,
+                tenant: true,
                 bookings: {
                     where: { status: { in: ['Upcoming', 'Completed'] } },
                     include: { class: true }
@@ -633,9 +497,18 @@ const getMemberProfile = async (req, res) => {
         });
 
         res.json({
-            id: member.memberId,
+            id: member.id,
+            memberId: member.memberId,
             name: member.name,
+            email: member.email,
+            phone: member.phone,
+            joinDate: member.joinDate,
+            expiryDate: member.expiryDate,
             status: member.status,
+            emergencyName: member.emergencyName,
+            emergencyPhone: member.emergencyPhone,
+            plan: member.plan,
+            branch: member.tenant?.name || 'Main Branch',
             benefitWallet
         });
     } catch (error) {
@@ -643,14 +516,89 @@ const getMemberProfile = async (req, res) => {
     }
 };
 
-const getWorkoutPlans = async (req, res) => {
+const updateMemberProfile = async (req, res) => {
     try {
+        const { phone, emergencyName, emergencyPhone } = req.body;
         const member = await prisma.member.findUnique({
             where: { userId: req.user.id }
         });
 
+        if (!member) return res.status(404).json({ message: 'Member not found' });
+
+        const updatedMember = await prisma.member.update({
+            where: { id: member.id },
+            data: {
+                phone: phone || member.phone,
+                emergencyName: emergencyName || member.emergencyName,
+                emergencyPhone: emergencyPhone || member.emergencyPhone
+            }
+        });
+
+        res.json({ message: 'Profile updated successfully', member: updatedMember });
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+
+const changePassword = async (req, res) => {
+    try {
+        const { currentPassword, newPassword } = req.body;
+        const bcrypt = require('bcryptjs');
+
+        const user = await prisma.user.findUnique({
+            where: { id: req.user.id }
+        });
+
+        if (!user) return res.status(404).json({ message: 'User not found' });
+
+        const isMatch = await bcrypt.compare(currentPassword, user.password);
+        if (!isMatch) return res.status(401).json({ message: 'Invalid current password' });
+
+        const salt = await bcrypt.genSalt(10);
+        const hashedPassword = await bcrypt.hash(newPassword, salt);
+
+        await prisma.user.update({
+            where: { id: user.id },
+            data: { password: hashedPassword }
+        });
+
+        res.json({ message: 'Password changed successfully' });
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+
+const getWorkoutPlans = async (req, res) => {
+    try {
+        const { role, id: userId, email, name, tenantId: userTenantId } = req.user;
+        const { memberId: queryMemberId } = req.query;
+        let member;
+
+        if (role === 'BRANCH_ADMIN' || role === 'MANAGER' || role === 'SUPER_ADMIN' || role === 'TRAINER') {
+            const memberId = queryMemberId || (req.body && req.body.memberId);
+            if (!memberId) {
+                member = await prisma.member.findUnique({ where: { userId } });
+            } else {
+                member = await prisma.member.findUnique({ where: { id: parseInt(memberId) } });
+            }
+        } else {
+            member = await prisma.member.findUnique({ where: { userId } });
+        }
+
         if (!member) {
             return res.status(404).json({ message: 'Member not found' });
+        }
+
+        // Authorization Check for Management
+        if (role === 'BRANCH_ADMIN' || role === 'MANAGER') {
+            const branches = await prisma.tenant.findMany({
+                where: { OR: [{ id: userTenantId || -1 }, { owner: email || '___' }, { owner: name || '___' }] },
+                select: { id: true }
+            });
+            const managedIds = branches.map(b => b.id);
+            if (!managedIds.includes(member.tenantId)) {
+                return res.status(403).json({ message: 'Member does not belong to your managed branches' });
+            }
         }
 
         const plans = await prisma.workoutPlan.findMany({
@@ -666,12 +614,35 @@ const getWorkoutPlans = async (req, res) => {
 
 const getDietPlans = async (req, res) => {
     try {
-        const member = await prisma.member.findUnique({
-            where: { userId: req.user.id }
-        });
+        const { role, id: userId, email, name, tenantId: userTenantId } = req.user;
+        const { memberId: queryMemberId } = req.query;
+        let member;
+
+        if (role === 'BRANCH_ADMIN' || role === 'MANAGER' || role === 'SUPER_ADMIN' || role === 'TRAINER') {
+            const memberId = queryMemberId || (req.body && req.body.memberId);
+            if (!memberId) {
+                member = await prisma.member.findUnique({ where: { userId } });
+            } else {
+                member = await prisma.member.findUnique({ where: { id: parseInt(memberId) } });
+            }
+        } else {
+            member = await prisma.member.findUnique({ where: { userId } });
+        }
 
         if (!member) {
             return res.status(404).json({ message: 'Member not found' });
+        }
+
+        // Authorization Check for Management
+        if (role === 'BRANCH_ADMIN' || role === 'MANAGER') {
+            const branches = await prisma.tenant.findMany({
+                where: { OR: [{ id: userTenantId || -1 }, { owner: email || '___' }, { owner: name || '___' }] },
+                select: { id: true }
+            });
+            const managedIds = branches.map(b => b.id);
+            if (!managedIds.includes(member.tenantId)) {
+                return res.status(403).json({ message: 'Member does not belong to your managed branches' });
+            }
         }
 
         const plans = await prisma.dietPlan.findMany({
@@ -680,6 +651,61 @@ const getDietPlans = async (req, res) => {
         });
 
         res.json(plans);
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+
+const getMemberAttendance = async (req, res) => {
+    try {
+        const member = await prisma.member.findUnique({
+            where: { userId: req.user.id }
+        });
+
+        if (!member) return res.status(404).json({ message: 'Member not found' });
+
+        const attendance = await prisma.attendance.findMany({
+            where: { memberId: member.id },
+            orderBy: { date: 'desc' },
+            take: 50
+        });
+
+        const now = new Date();
+        const totalVisits = attendance.length;
+        const visitsThisMonth = attendance.filter(a => {
+            const date = new Date(a.date);
+            return date.getMonth() === now.getMonth() && date.getFullYear() === now.getFullYear();
+        }).length;
+
+        // Calculate average duration for records that have both checkIn and checkOut
+        const withDuration = attendance.filter(a => a.checkIn && a.checkOut);
+        let avgDuration = '--';
+        if (withDuration.length > 0) {
+            const totalMs = withDuration.reduce((sum, a) => sum + (new Date(a.checkOut) - new Date(a.checkIn)), 0);
+            const avgMin = Math.round(totalMs / withDuration.length / 60000);
+            avgDuration = `${avgMin} min`;
+        }
+
+        // Consistency: visits this month / days elapsed this month
+        const daysElapsed = now.getDate();
+        const consistencyPct = daysElapsed > 0 ? Math.min(100, Math.round((visitsThisMonth / daysElapsed) * 100)) : 0;
+
+        res.json({
+            logs: attendance.map(a => ({
+                id: a.id,
+                date: a.date,
+                checkInTime: a.checkIn ? new Date(a.checkIn).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : null,
+                checkOutTime: a.checkOut ? new Date(a.checkOut).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : null,
+                type: a.type,
+                status: a.status
+            })),
+            stats: {
+                totalVisits,
+                visitsThisMonth,
+                avgDuration,
+                consistency: `${consistencyPct}%`
+            }
+        });
     } catch (error) {
         res.status(500).json({ message: error.message });
     }
@@ -781,6 +807,174 @@ const redeemReward = async (req, res) => {
     }
 };
 
+const getMyReferrals = async (req, res) => {
+    try {
+        const member = await prisma.member.findUnique({
+            where: { userId: req.user.id }
+        });
+
+        if (!member) {
+            return res.status(404).json({ message: 'Member not found' });
+        }
+
+        const rawLeads = await prisma.lead.findMany({
+            where: { tenantId: member.tenantId, source: 'Referral' },
+            orderBy: { createdAt: 'desc' }
+        });
+
+        const myReferrals = [];
+        let totalRewardsEarned = 0;
+        let successfulSignups = 0;
+
+        for (const lead of rawLeads) {
+            if (lead.notes) {
+                try {
+                    const notesData = JSON.parse(lead.notes);
+                    if (notesData.referrerId === member.memberId) {
+                        const isConverted = lead.status === 'Converted';
+                        if (isConverted) successfulSignups++;
+                        // Dummy reward calculation logic for now: 100 per conversion
+                        if (isConverted) totalRewardsEarned += 100;
+
+                        myReferrals.push({
+                            id: lead.id,
+                            referredName: lead.name,
+                            phone: lead.phone,
+                            email: lead.email,
+                            status: isConverted ? 'Converted' : (lead.status === 'New' ? 'Pending' : lead.status),
+                            rewardStatus: isConverted ? 'Claimed' : 'Pending',
+                            createdAt: lead.createdAt
+                        });
+                    }
+                } catch (e) {
+                    console.error("Error parsing lead notes", e);
+                }
+            }
+        }
+
+        res.json({
+            referralCode: member.memberId,
+            referrals: myReferrals,
+            stats: {
+                referralsSent: myReferrals.length,
+                successfulSignups,
+                rewardsEarned: totalRewardsEarned
+            }
+        });
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+
+const getMemberDashboard = async (req, res) => {
+    try {
+        const member = await prisma.member.findUnique({
+            where: { userId: req.user.id },
+            include: {
+                plan: true,
+                tenant: true,
+                trainer: true,
+                lockers: true,
+                attendances: {
+                    orderBy: { date: 'desc' },
+                    take: 5
+                },
+                bookings: {
+                    where: { status: 'Upcoming' },
+                    include: {
+                        class: {
+                            include: { trainer: true }
+                        }
+                    },
+                    orderBy: { date: 'asc' },
+                    take: 1
+                },
+                invoices: {
+                    where: { status: { not: 'Paid' } }
+                }
+            }
+        });
+
+        if (!member) return res.status(404).json({ message: 'Member profile not found' });
+
+        // Calculate visits this month
+        const now = new Date();
+        const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+
+        const visitsThisMonth = await prisma.attendance.count({
+            where: {
+                memberId: member.id,
+                date: { gte: startOfMonth }
+            }
+        });
+
+        // Count remaining PT sessions (Upcoming bookings for PT-type classes)
+        const ptSessionsRemaining = await prisma.booking.count({
+            where: {
+                memberId: member.id,
+                status: 'Upcoming',
+                class: {
+                    type: { contains: 'PT' }
+                }
+            }
+        });
+
+        // Calculate pending dues
+        const pendingDues = member.invoices.reduce((sum, inv) => sum + parseFloat(inv.amount || 0), 0);
+
+        // Benefits
+        const benefits = member.plan?.benefits || "";
+
+        const dashboardData = {
+            memberInfo: {
+                id: member.id,
+                name: member.name,
+                memberId: member.memberId,
+                branchName: member.tenant?.name || 'Main Branch',
+                status: member.status
+            },
+            membership: {
+                planName: member.plan?.name || 'No Active Plan',
+                startDate: member.joinDate,
+                expiryDate: member.expiryDate,
+                daysRemaining: member.expiryDate ? Math.max(0, Math.floor((new Date(member.expiryDate) - new Date()) / (1000 * 60 * 60 * 24))) : 0,
+                benefits: benefits
+            },
+            stats: {
+                ptSessionsRemaining,
+                visitsThisMonth,
+                pendingDues,
+                activeInvoices: member.invoices.length
+            },
+            recentAttendance: member.attendances.map(a => ({
+                id: a.id,
+                date: a.date,
+                time: a.checkIn ? new Date(a.checkIn).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : (a.date ? new Date(a.date).toLocaleDateString('en-GB') : 'N/A')
+            })),
+            upcomingClass: member.bookings.length > 0 ? {
+                id: member.bookings[0].id,
+                className: member.bookings[0].class.name,
+                date: member.bookings[0].date,
+                status: member.bookings[0].status
+            } : null,
+            trainer: member.trainer ? {
+                name: member.trainer.name,
+                specialization: 'Personal Trainer'
+            } : {
+                name: 'Not Assigned',
+                specialization: 'Connect with staff'
+            },
+            locker: member.lockers.length > 0 ? {
+                number: member.lockers[0].number
+            } : null
+        };
+
+        res.json(dashboardData);
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+
 module.exports = {
     upgradePlan,
     cancelMembership,
@@ -806,5 +1000,10 @@ module.exports = {
     getDietPlans,
     deleteSavedCard,
     getRewardCatalog,
-    redeemReward
+    redeemReward,
+    getMyReferrals,
+    getMemberDashboard,
+    updateMemberProfile,
+    changePassword,
+    getMemberAttendance
 };

@@ -43,7 +43,7 @@ const equipmentRoutes = require('./routes/equipment.routes');
 const financeRoutes = require('./routes/finance.routes');
 const lockerRoutes = require('./routes/locker.routes');
 const inventoryRoutes = require('./routes/inventory.routes');
-const announcementRoutes = require('./routes/announcement.routes');
+const communicationRoutes = require('./routes/communication.routes');
 const rewardRoutes = require('./routes/reward.routes');
 const feedbackRoutes = require('./routes/feedback.routes');
 
@@ -53,20 +53,27 @@ app.use('/api/v1/equipment', equipmentRoutes);
 app.use('/api/v1/finance', financeRoutes);
 app.use('/api/v1/lockers', lockerRoutes);
 app.use('/api/v1/inventory', inventoryRoutes);
-app.use('/api/v1/announcements', announcementRoutes);
+app.use('/api/v1/communication', communicationRoutes);
 app.use('/api/v1/rewards', rewardRoutes);
 app.use('/api/v1/feedback', feedbackRoutes);
+
+const referralRoutes = require('./routes/referral.routes');
+app.use('/api/v1/referrals', referralRoutes);
 
 const dashboardRoutes = require('./routes/dashboard.routes');
 app.use('/api/v1/dashboard', dashboardRoutes);
 
 const storeRoutes = require('./routes/store.routes');
 const amenityRoutes = require('./routes/amenity.routes');
-const promoRoutes = require('./routes/promo.routes');
+const ptRoutes = require('./routes/pt.routes');
 
 app.use('/api/v1/store', storeRoutes);
 app.use('/api/v1/amenities', amenityRoutes);
-app.use('/api/v1/promos', promoRoutes);
+app.use('/api/v1/pt', ptRoutes);
+
+const branchesRoutes = require('./routes/branches.routes');
+
+app.use('/api/v1/branches', branchesRoutes);
 
 // Base Route
 app.get('/', (req, res) => {
@@ -74,3 +81,5 @@ app.get('/', (req, res) => {
 });
 
 module.exports = app;
+
+// Restart

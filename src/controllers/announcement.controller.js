@@ -3,10 +3,44 @@ const prisma = new PrismaClient();
 
 exports.getAllAnnouncements = async (req, res) => {
     try {
-        const { tenantId, role } = req.user;
+        const { role } = req.user;
+        let tenantId = req.user.tenantId;
+
+        if (role === 'MEMBER') {
+            const member = await prisma.member.findFirst({
+                where: { userId: parseInt(req.user.id) }
+            });
+            if (member) {
+                tenantId = member.tenantId;
+            }
+        }
+
+        const { portal } = req.query;
         const where = {};
-        if (role !== 'SUPER_ADMIN') {
-            where.tenantId = tenantId;
+
+        if (portal === 'member') {
+            where.OR = [
+                { targetRole: { mode: 'insensitive', equals: 'all' } },
+                { targetRole: { mode: 'insensitive', equals: 'MEMBER' } },
+                { targetRole: { mode: 'insensitive', equals: 'member' } },
+                { targetRole: { mode: 'insensitive', equals: 'ACTIVE' } }
+            ];
+
+            if (role !== 'SUPER_ADMIN') {
+                const tenantFilter = [null];
+                const tid = parseInt(tenantId);
+                if (!isNaN(tid)) {
+                    tenantFilter.push(tid);
+                }
+                where.tenantId = { in: tenantFilter };
+            }
+        } else {
+            if (role !== 'SUPER_ADMIN') {
+                const tid = parseInt(tenantId);
+                if (!isNaN(tid)) {
+                    where.tenantId = tid;
+                }
+            }
         }
 
         const announcements = await prisma.announcement.findMany({
@@ -19,7 +53,9 @@ exports.getAllAnnouncements = async (req, res) => {
             id: a.id,
             title: a.title,
             message: a.content,
+            content: a.content,
             date: new Date(a.createdAt).toLocaleDateString(),
+            createdAt: a.createdAt,
             priority: a.priority,
             targetRole: a.targetRole
         }));
@@ -33,15 +69,15 @@ exports.getAllAnnouncements = async (req, res) => {
 exports.addAnnouncement = async (req, res) => {
     try {
         const { tenantId, role, id } = req.user;
-        const { title, message, priority, targetAudience } = req.body;
+        const { title, message, content, priority, targetAudience, targetRole } = req.body;
 
         const newAnnouncement = await prisma.announcement.create({
             data: {
-                tenantId: role === 'SUPER_ADMIN' ? null : tenantId,
+                tenantId: role === 'SUPER_ADMIN' ? null : parseInt(tenantId),
                 title,
-                content: message,
-                priority: priority || 'medium',
-                targetRole: targetAudience || 'all',
+                content: message || content,
+                priority: priority ? String(priority) : 'medium',
+                targetRole: targetRole || (targetAudience ? targetAudience.toLowerCase() : 'all'),
                 authorId: id
             }
         });

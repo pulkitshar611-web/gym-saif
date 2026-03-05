@@ -1,15 +1,26 @@
 const prisma = require('../config/prisma');
 
+const getWhereClause = (req, prefix = '') => {
+    const { tenantId, role } = req.user;
+    const { branchId } = req.query;
+
+    if (role === 'SUPER_ADMIN' || role === 'BRANCH_ADMIN' || role === 'MANAGER') {
+        if (branchId && branchId !== 'all' && branchId !== 'undefined' && branchId !== 'null') {
+            return prefix ? { [prefix]: { tenantId: parseInt(branchId) } } : { tenantId: parseInt(branchId) };
+        } else if (branchId === 'all') {
+            return {};
+        }
+    }
+    
+    return role === 'SUPER_ADMIN' ? {} : (prefix ? { [prefix]: { tenantId } } : { tenantId });
+};
+
+
 // Get Dashboard Stats
 const getDashboardStats = async (req, res) => {
     try {
-        const { tenantId, role } = req.user;
-
-        if (!tenantId && role !== 'SUPER_ADMIN') {
-            return res.status(400).json({ message: 'Tenant ID not found for user' });
-        }
-
-        const whereClause = role === 'SUPER_ADMIN' ? {} : { tenantId };
+        const { role } = req.user;
+        const whereClause = getWhereClause(req);
 
         // 1. Total Members
         const totalMembers = await prisma.member.count({
@@ -31,7 +42,7 @@ const getDashboardStats = async (req, res) => {
 
         const todaysCheckIns = await prisma.attendance.count({
             where: {
-                user: role === 'SUPER_ADMIN' ? {} : { tenantId },
+                ...whereClause,
                 checkIn: { gte: startOfDay }
             }
         });
@@ -59,8 +70,8 @@ const getDashboardStats = async (req, res) => {
         // 6. Security Risks
         const defaulterCheckIns = await prisma.attendance.count({
             where: {
+                ...whereClause,
                 user: {
-                    ...(role === 'SUPER_ADMIN' ? {} : { tenantId }),
                     status: 'Inactive'
                 },
                 checkIn: { gte: startOfDay }
@@ -81,18 +92,88 @@ const getDashboardStats = async (req, res) => {
             }
         });
 
+        // 7. Revenue Overview (Last 6 Months)
+        const revenueOverview = [];
+        const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+        for (let i = 5; i >= 0; i--) {
+            const date = new Date();
+            date.setMonth(date.getMonth() - i);
+            const mStart = new Date(date.getFullYear(), date.getMonth(), 1);
+            const mEnd = new Date(date.getFullYear(), date.getMonth() + 1, 0, 23, 59, 59);
+
+            const mRevenue = await prisma.invoice.aggregate({
+                where: {
+                    ...whereClause,
+                    status: 'Paid',
+                    paidDate: { gte: mStart, lte: mEnd }
+                },
+                _sum: { amount: true }
+            });
+
+            revenueOverview.push({
+                month: monthNames[date.getMonth()],
+                value: mRevenue._sum.amount || 0
+            });
+        }
+
+        // 8. Weekly Attendance (Last 7 Days)
+        const weeklyAttendance = [];
+        const dayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+        for (let i = 6; i >= 0; i--) {
+            const date = new Date();
+            date.setDate(date.getDate() - i);
+            const dStart = new Date(date.setHours(0, 0, 0, 0));
+            const dEnd = new Date(date.setHours(23, 59, 59, 999));
+
+            const dCount = await prisma.attendance.count({
+                where: {
+                    ...whereClause,
+                    date: { gte: dStart, lte: dEnd }
+                }
+            });
+
+            weeklyAttendance.push({
+                day: dayNames[dStart.getDay()],
+                count: dCount
+            });
+        }
+
+        // 9. Accounts Receivable
+        const receivables = await prisma.invoice.aggregate({
+            where: {
+                ...whereClause,
+                status: { in: ['Unpaid', 'Partial'] }
+            },
+            _sum: { amount: true }
+        });
+
+        // 10. Membership Distribution
+        const distribution = await prisma.member.groupBy({
+            by: ['status'],
+            where: whereClause,
+            _count: { id: true }
+        });
+
         res.json({
             stats: [
-                { id: 1, title: 'Branch Members', value: totalMembers, icon: 'Users', trend: 'Live', color: 'primary' },
-                { id: 2, title: 'Active Trainers', value: activeTrainers, icon: 'Users', trend: 'Current', color: 'success' },
-                { id: 3, title: 'Today Check-ins', value: todaysCheckIns, icon: 'CheckCircle', trend: 'Today', color: 'primary' },
-                { id: 4, title: 'Branch Revenue', value: `₹${revenue._sum.amount || 0}`, icon: 'DollarSign', trend: 'This Month', color: 'success' },
+                { id: 1, title: 'Total Members', value: totalMembers, icon: 'Users', trend: 'Live', color: 'primary' },
+                { id: 2, title: 'Monthly Revenue', value: `₹${revenue._sum.amount || 0}`, icon: 'DollarSign', trend: 'This Month', color: 'success' },
+                { id: 3, title: 'Expiring Soon', value: expiringSoonCount, icon: 'CheckCircle', trend: 'Review Needed', color: 'warning' },
+                { id: 4, title: 'Today Check-ins', value: todaysCheckIns, icon: 'CheckCircle', trend: 'Today', color: 'primary' },
             ],
+            revenueOverview,
+            weeklyAttendance,
+            receivables: receivables._sum.amount || 0,
+            membershipDistribution: distribution,
             equipment: equipmentData,
             risks: {
                 defaulters: defaulterCheckIns,
                 expiringSoon: expiringSoonCount,
                 manualOverrides: 0
+            },
+            liveOccupancy: {
+                current: todaysCheckIns, // Simplification: today's checkins as current for demo
+                capacity: 50
             }
         });
 
@@ -105,11 +186,11 @@ const getDashboardStats = async (req, res) => {
 // Get Recent Member Activity
 const getRecentActivities = async (req, res) => {
     try {
-        const tenantId = req.user.tenantId;
+        const whereClause = getWhereClause(req, 'user');
 
         // Fetch recent check-ins
         const recentCheckIns = await prisma.attendance.findMany({
-            where: { user: { tenantId } },
+            where: whereClause,
             take: 5,
             orderBy: { checkIn: 'desc' },
             include: { user: { select: { name: true } } }
@@ -132,10 +213,10 @@ const getRecentActivities = async (req, res) => {
 // Get Trainer Availability
 const getTrainerAvailability = async (req, res) => {
     try {
-        const tenantId = req.user.tenantId;
+        const whereClause = getWhereClause(req);
 
         const trainers = await prisma.user.findMany({
-            where: { tenantId, role: 'TRAINER' },
+            where: { ...whereClause, role: 'TRAINER' },
             select: { id: true, name: true, status: true }
         });
 
@@ -156,7 +237,7 @@ const getTrainerAvailability = async (req, res) => {
 // Get Financial Stats (Daily Collection)
 const getFinancialStats = async (req, res) => {
     try {
-        const tenantId = req.user.tenantId;
+        const whereClause = getWhereClause(req);
 
         const startOfDay = new Date();
         startOfDay.setHours(0, 0, 0, 0);
@@ -164,7 +245,7 @@ const getFinancialStats = async (req, res) => {
         // 1. Fetch Invoices for Today (Paid only)
         const invoices = await prisma.invoice.findMany({
             where: {
-                tenantId,
+                ...whereClause,
                 status: 'Paid',
                 paidDate: { gte: startOfDay }
             },
@@ -186,7 +267,7 @@ const getFinancialStats = async (req, res) => {
         // 3. Fetch Expenses for Today
         const expenses = await prisma.expense.aggregate({
             where: {
-                tenantId,
+                ...whereClause,
                 date: { gte: startOfDay }
             },
             _sum: { amount: true }
@@ -214,12 +295,8 @@ const getFinancialStats = async (req, res) => {
 // Get Revenue Report
 const getRevenueReport = async (req, res) => {
     try {
-        const tenantId = req.user.tenantId;
-        const { date } = req.query; // format 'YYYY-MM-DD'
-
-        if (!tenantId) {
-            return res.status(400).json({ message: 'Tenant ID not found for user' });
-        }
+        const { date } = req.query;
+        const whereClause = getWhereClause(req);
 
         const startOfMonth = date ? new Date(date) : new Date();
         startOfMonth.setDate(1);
@@ -231,7 +308,7 @@ const getRevenueReport = async (req, res) => {
         // 1. Total Revenue (Paid in current month)
         const totalRevenue = await prisma.invoice.aggregate({
             where: {
-                tenantId,
+                ...whereClause,
                 status: 'Paid',
                 paidDate: { gte: startOfMonth, lt: endOfMonth }
             },
@@ -241,16 +318,15 @@ const getRevenueReport = async (req, res) => {
         // 2. Pending Payments (Unpaid or Partial due in current month)
         const pendingPayments = await prisma.invoice.aggregate({
             where: {
-                tenantId,
-                status: { in: ['Unpaid', 'Partial'] },
-                dueDate: { gte: startOfMonth, lt: endOfMonth }
+                ...whereClause,
+                status: { in: ['Unpaid', 'unpaid', 'Partial'] }
             },
             _sum: { amount: true }
         });
 
         // 3. Transactions (Table Data) — all tenant invoices
         const transactions = await prisma.invoice.findMany({
-            where: { tenantId },
+            where: whereClause,
             include: { member: { select: { name: true } } },
             orderBy: { dueDate: 'desc' },
             take: 100
@@ -285,12 +361,8 @@ const getRevenueReport = async (req, res) => {
 // Get Membership Report
 const getMembershipReport = async (req, res) => {
     try {
-        const tenantId = req.user.tenantId;
-        const { date } = req.query; // format 'YYYY-MM-DD'
-
-        if (!tenantId) {
-            return res.status(400).json({ message: 'Tenant ID not found for user' });
-        }
+        const { date } = req.query;
+        const whereClause = getWhereClause(req);
 
         const startOfMonth = date ? new Date(date) : new Date();
         startOfMonth.setDate(1);
@@ -302,7 +374,7 @@ const getMembershipReport = async (req, res) => {
         // 1. Active Members Total
         const activeMembersCount = await prisma.member.count({
             where: {
-                tenantId,
+                ...whereClause,
                 status: 'Active'
             }
         });
@@ -310,7 +382,7 @@ const getMembershipReport = async (req, res) => {
         // 2. New Joins (MTD)
         const newJoinsCount = await prisma.member.count({
             where: {
-                tenantId,
+                ...whereClause,
                 joinDate: { gte: startOfMonth, lt: endOfMonth }
             }
         });
@@ -318,7 +390,7 @@ const getMembershipReport = async (req, res) => {
         // 3. Expired (MTD)
         const expiredCount = await prisma.member.count({
             where: {
-                tenantId,
+                ...whereClause,
                 status: 'Expired',
                 expiryDate: { gte: startOfMonth, lt: endOfMonth }
             }
@@ -326,7 +398,7 @@ const getMembershipReport = async (req, res) => {
 
         // 4. Member List (Table Data) — all members, not just this month
         const members = await prisma.member.findMany({
-            where: { tenantId },
+            where: whereClause,
             include: { plan: { select: { name: true } } },
             orderBy: { joinDate: 'desc' },
             take: 100
@@ -357,12 +429,8 @@ const getMembershipReport = async (req, res) => {
 // Get Lead Conversion Report
 const getLeadConversionReport = async (req, res) => {
     try {
-        const tenantId = req.user.tenantId;
         const { date } = req.query;
-
-        if (!tenantId) {
-            return res.status(400).json({ message: 'Tenant ID not found for user' });
-        }
+        const whereClause = getWhereClause(req);
 
         const startOfMonth = date ? new Date(date) : new Date();
         startOfMonth.setDate(1);
@@ -372,16 +440,16 @@ const getLeadConversionReport = async (req, res) => {
 
         // Stats: based on selected month
         const totalLeads = await prisma.lead.count({
-            where: { tenantId, createdAt: { gte: startOfMonth, lt: endOfMonth } }
+            where: { ...whereClause, createdAt: { gte: startOfMonth, lt: endOfMonth } }
         });
         const convertedLeads = await prisma.lead.count({
-            where: { tenantId, status: 'Converted', updatedAt: { gte: startOfMonth, lt: endOfMonth } }
+            where: { ...whereClause, status: 'Converted', updatedAt: { gte: startOfMonth, lt: endOfMonth } }
         });
         const conversionRate = totalLeads > 0 ? ((convertedLeads / totalLeads) * 100).toFixed(1) : 0;
 
         // Table: show all leads for the tenant (most recent first)
         const leads = await prisma.lead.findMany({
-            where: { tenantId },
+            where: whereClause,
             orderBy: { createdAt: 'desc' },
             take: 100
         });
@@ -411,12 +479,8 @@ const getLeadConversionReport = async (req, res) => {
 // Get Expense Report
 const getExpenseReport = async (req, res) => {
     try {
-        const tenantId = req.user.tenantId;
-        const { date } = req.query; // format 'YYYY-MM-DD'
-
-        if (!tenantId) {
-            return res.status(400).json({ message: 'Tenant ID not found for user' });
-        }
+        const { date } = req.query;
+        const whereClause = getWhereClause(req);
 
         const startOfMonth = date ? new Date(date) : new Date();
         startOfMonth.setDate(1);
@@ -428,7 +492,7 @@ const getExpenseReport = async (req, res) => {
         // 1. Total Expenses
         const totalExpenses = await prisma.expense.aggregate({
             where: {
-                tenantId,
+                ...whereClause,
                 date: { gte: startOfMonth, lt: endOfMonth }
             },
             _sum: { amount: true }
@@ -437,7 +501,7 @@ const getExpenseReport = async (req, res) => {
         // 2. Operational Costs (Everything except Inventory category)
         const operationalCosts = await prisma.expense.aggregate({
             where: {
-                tenantId,
+                ...whereClause,
                 date: { gte: startOfMonth, lt: endOfMonth },
                 category: { not: 'Inventory' }
             },
@@ -447,7 +511,7 @@ const getExpenseReport = async (req, res) => {
         // 3. Supplies/Inventory
         const inventoryCosts = await prisma.expense.aggregate({
             where: {
-                tenantId,
+                ...whereClause,
                 date: { gte: startOfMonth, lt: endOfMonth },
                 category: 'Inventory'
             },
@@ -456,7 +520,7 @@ const getExpenseReport = async (req, res) => {
 
         // 4. Expense List — all tenant expenses
         const expenses = await prisma.expense.findMany({
-            where: { tenantId },
+            where: whereClause,
             orderBy: { date: 'desc' },
             take: 100
         });
@@ -483,66 +547,190 @@ const getExpenseReport = async (req, res) => {
     }
 };
 
-// Get Branch Performance Report
 const getPerformanceReport = async (req, res) => {
     try {
-        const tenantId = req.user.tenantId;
+        const whereClause = getWhereClause(req);
+        const today = new Date();
+        const startOfThisMonth = new Date(today.getFullYear(), today.getMonth(), 1);
 
-        if (!tenantId) {
-            return res.status(400).json({ message: 'Tenant ID not found for user' });
-        }
+        // 1. Basic Stats
+        const totalMembers = await prisma.member.count({ where: { ...whereClause, status: { in: ['Active', 'active'] } } });
 
-        const { date: reqDate } = req.query;
-        // We'll calculate performance for the last 4 months
-        const performanceData = [];
-        for (let i = 0; i < 4; i++) {
-            const date = reqDate ? new Date(reqDate) : new Date();
-            date.setMonth(date.getMonth() - i);
-            date.setDate(1);
-            date.setHours(0, 0, 0, 0);
+        const revenueThisMonthStr = await prisma.invoice.aggregate({
+            where: { ...whereClause, status: { in: ['Paid', 'paid'] }, paidDate: { gte: startOfThisMonth } },
+            _sum: { amount: true }
+        });
+        const revenueThisMonth = Number(revenueThisMonthStr._sum.amount || 0);
 
-            const startOfMonth = new Date(date);
-            const endOfMonth = new Date(date);
-            endOfMonth.setMonth(endOfMonth.getMonth() + 1);
+        const pendingDuesStr = await prisma.invoice.aggregate({
+            where: { ...whereClause, status: { in: ['Unpaid', 'unpaid', 'Partial', 'Overdue'] } },
+            _sum: { amount: true }
+        });
+        const pendingDues = Number(pendingDuesStr._sum.amount || 0);
 
-            const revenue = await prisma.invoice.aggregate({
-                where: { tenantId, status: 'Paid', paidDate: { gte: startOfMonth, lt: endOfMonth } },
+        const totalInvoicedStr = await prisma.invoice.aggregate({
+            where: { ...whereClause, paidDate: { gte: startOfThisMonth } },
+            _sum: { amount: true }
+        });
+        const totalInvoiced = Number(totalInvoicedStr._sum.amount || 0);
+
+        const collectionRate = totalInvoiced > 0 ? ((revenueThisMonth / totalInvoiced) * 100).toFixed(1) : 0;
+
+        // 2. Earnings Report (Last 12 months)
+        const earningsValues = [];
+        const earningsMonths = [];
+        const profitValues = [];
+        const expenseValues = [];
+        let totalIncome = 0;
+        let totalExpenses = 0;
+
+        for (let i = 11; i >= 0; i--) {
+            const date = new Date(today.getFullYear(), today.getMonth() - i, 1);
+            const startStr = new Date(date.getFullYear(), date.getMonth(), 1);
+            const endStr = new Date(date.getFullYear(), date.getMonth() + 1, 1);
+
+            const monthRev = await prisma.invoice.aggregate({
+                where: { ...whereClause, status: { in: ['Paid', 'paid'] }, paidDate: { gte: startStr, lt: endStr } },
                 _sum: { amount: true }
             });
-
-            const expense = await prisma.expense.aggregate({
-                where: { tenantId, date: { gte: startOfMonth, lt: endOfMonth } },
+            const monthExp = await prisma.expense.aggregate({
+                where: { ...whereClause, date: { gte: startStr, lt: endStr } },
                 _sum: { amount: true }
-            });
+            }).catch(() => ({ _sum: { amount: 0 } }));
 
-            const revAmount = Number(revenue._sum.amount || 0);
-            const expAmount = Number(expense._sum.amount || 0);
-            const profitValue = revAmount - expAmount;
-            const marginValue = revAmount > 0 ? ((profitValue / revAmount) * 100).toFixed(1) : 0;
+            const r = Number(monthRev._sum.amount || 0);
+            const e = Number(monthExp._sum.amount || 0);
 
-            performanceData.push({
-                id: i + 1,
-                month: date.toLocaleString('default', { month: 'long', year: 'numeric' }),
-                revenue: revAmount.toLocaleString('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 0 }),
-                expense: expAmount.toLocaleString('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 0 }),
-                profit: profitValue.toLocaleString('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 0 }),
-                margin: `${marginValue}%`,
-                status: marginValue >= 70 ? 'Excellent' : (marginValue >= 50 ? 'Good' : 'Average')
-            });
+            earningsMonths.push(date.toLocaleString('default', { month: 'short' }).toUpperCase());
+            earningsValues.push((r / 1000).toFixed(1));
+            profitValues.push(((r - e) / 1000).toFixed(1));
+            expenseValues.push((e / 1000).toFixed(1));
+
+            totalIncome += r;
+            totalExpenses += e;
         }
 
-        // Calculate Stats (Current Month vs Previous)
-        // For simplicity, we'll return fixed stats for now but based on real data if possible
-        const currentMonth = performanceData[0];
-        const prevMonth = performanceData[1];
+        // 3. Weekly Earnings (Last 7 days)
+        const weeklyValues = [];
+        const weeklyDays = [];
+        for (let i = 6; i >= 0; i--) {
+            const d = new Date(today);
+            d.setDate(d.getDate() - i);
+            d.setHours(0, 0, 0, 0);
+
+            const nextD = new Date(d);
+            nextD.setDate(d.getDate() + 1);
+
+            const dRev = await prisma.invoice.aggregate({
+                where: { ...whereClause, status: { in: ['Paid', 'paid'] }, paidDate: { gte: d, lt: nextD } },
+                _sum: { amount: true }
+            });
+            weeklyDays.push(d.toLocaleString('default', { weekday: 'short' }).toUpperCase());
+            weeklyValues.push((Number(dRev._sum.amount || 0) / 1000).toFixed(1));
+        }
+
+        // 4. Member Retention (Distribution)
+        const retention = await prisma.member.groupBy({
+            by: ['status'],
+            where: whereClause,
+            _count: { id: true }
+        });
+
+        // 5. Membership Growth (New members per month, last 12 months)
+        const growthMonths = [];
+        const growthLabels = [];
+        for (let i = 11; i >= 0; i--) {
+            const date = new Date(today.getFullYear(), today.getMonth() - i, 1);
+            const startStr = new Date(date.getFullYear(), date.getMonth(), 1);
+            const endStr = new Date(date.getFullYear(), date.getMonth() + 1, 1);
+
+            const count = await prisma.member.count({
+                where: { ...whereClause, joinDate: { gte: startStr, lt: endStr } }
+            });
+
+            growthLabels.push(date.toLocaleString('default', { month: 'short' }));
+            growthMonths.push(count);
+        }
+
+        const revByPlan = await prisma.invoice.groupBy({
+            by: ['notes'], // Note: Assuming notes or a relation links back to plans in current schema. 
+            where: { ...whereClause, status: { in: ['Paid', 'paid'] } },
+            _sum: { amount: true }
+        });
+        // Trying to get plan names based on Member relation if available
+        const planRevenueRaw = await prisma.member.findMany({
+            where: whereClause,
+            select: {
+                plan: { select: { name: true } },
+                invoices: {
+                    where: { status: { in: ['Paid', 'paid'] } },
+                    select: { amount: true }
+                }
+            }
+        });
+
+        const planMap = {};
+        planRevenueRaw.forEach(m => {
+            const pName = m.plan?.name || 'No Plan';
+            const total = m.invoices.reduce((acc, inv) => acc + Number(inv.amount), 0);
+            planMap[pName] = (planMap[pName] || 0) + total;
+        });
+
+        const revenueByPlan = Object.entries(planMap).map(([name, value]) => ({ name, value }));
+
+        // 7. Popular Products
+        const popularProducts = await prisma.storeOrderItem.groupBy({
+            by: ['productId'],
+            where: { order: { ...whereClause } },
+            _sum: { quantity: true },
+            orderBy: { _sum: { quantity: 'desc' } },
+            take: 5
+        });
+        
+        // Enrich popular products with names
+        const enrichedProducts = await Promise.all(popularProducts.map(async (p) => {
+            const prod = await prisma.storeProduct.findUnique({ where: { id: p.productId }, select: { name: true } });
+            return { name: prod?.name || 'Unknown', quantity: p._sum.quantity };
+        }));
+
+        // 8. Recent Store Orders
+        const recentOrders = await prisma.storeOrder.findMany({
+            where: whereClause,
+            take: 10,
+            orderBy: { date: 'desc' },
+            select: { id: true, total: true, status: true, date: true, itemsCount: true }
+        });
 
         res.json({
-            stats: [
-                { label: 'Revenue (vs Exp)', value: currentMonth.margin, icon: 'TrendingUp', bg: 'bg-indigo-50', color: 'text-indigo-600', trend: 'up' },
-                { label: 'Lead Conv. Rate', value: '24.8%', icon: 'Target', bg: 'bg-purple-50', color: 'text-purple-600', trend: 'up' },
-                { label: 'Member Retention', value: '92.1%', icon: 'Activity', bg: 'bg-emerald-50', color: 'text-emerald-600', trend: 'up' },
-            ],
-            performanceData
+            stats: {
+                totalMembers,
+                revenueThisMonth,
+                collectionRate,
+                pendingDues
+            },
+            earnings: {
+                months: earningsMonths,
+                revenue: earningsValues,
+                profit: profitValues,
+                expenses: expenseValues,
+                totalIncome,
+                totalExpenses
+            },
+            weekly: {
+                days: weeklyDays,
+                values: weeklyValues
+            },
+            retention: retention.map(r => ({ status: r.status, count: r._count.id })),
+            growth: {
+                labels: growthLabels,
+                values: growthMonths
+            },
+            revenueByPlan,
+            popularProducts: enrichedProducts,
+            recentOrders: recentOrders.map(o => ({
+                ...o,
+                date: o.date.toISOString().split('T')[0]
+            }))
         });
 
     } catch (error) {
@@ -554,8 +742,8 @@ const getPerformanceReport = async (req, res) => {
 // Get Full Attendance Report
 const getAttendanceReport = async (req, res) => {
     try {
-        const tenantId = req.user.tenantId;
         const { date, type, search, page = 1, limit = 10 } = req.query;
+        const whereClause = getWhereClause(req);
 
         let startOfDay;
         if (date) {
@@ -568,24 +756,18 @@ const getAttendanceReport = async (req, res) => {
         endOfDay.setUTCDate(endOfDay.getUTCDate() + 1);
 
         const where = {
-            tenantId,
+            ...whereClause,
             date: { gte: startOfDay, lt: endOfDay }
         };
 
         if (type && type !== 'All') {
             where.user = where.user || {};
-            if (type === 'Staff') {
-                where.user.role = { in: ['STAFF', 'TRAINER', 'MANAGER'] };
-            } else if (type === 'Member' || type === 'MEMBER') {
-                where.user.role = 'MEMBER';
-            } else {
-                where.user.role = type.toUpperCase();
-            }
+            where.user.role = type.toUpperCase();
         }
 
         if (search) {
             where.user = where.user || {};
-            where.user.name = { contains: search, mode: 'insensitive' };
+            where.user.name = { contains: search };
         }
 
         const [attendance, total] = await Promise.all([
@@ -600,9 +782,9 @@ const getAttendanceReport = async (req, res) => {
         ]);
 
         // Stats
-        const totalToday = await prisma.attendance.count({ where: { tenantId, date: { gte: startOfDay, lt: endOfDay } } });
-        const membersToday = await prisma.attendance.count({ where: { tenantId, user: { role: 'MEMBER' }, date: { gte: startOfDay, lt: endOfDay } } });
-        const staffToday = await prisma.attendance.count({ where: { tenantId, user: { role: { in: ['STAFF', 'TRAINER', 'MANAGER'] } }, date: { gte: startOfDay, lt: endOfDay } } });
+        const totalToday = await prisma.attendance.count({ where: { ...whereClause, date: { gte: startOfDay, lt: endOfDay } } });
+        const membersToday = await prisma.attendance.count({ where: { ...whereClause, user: { role: 'MEMBER' }, date: { gte: startOfDay, lt: endOfDay } } });
+        const staffToday = await prisma.attendance.count({ where: { ...whereClause, user: { role: { in: ['STAFF', 'TRAINER', 'MANAGER'] } }, date: { gte: startOfDay, lt: endOfDay } } });
 
         res.json({
             data: attendance.map(a => ({
@@ -625,12 +807,12 @@ const getAttendanceReport = async (req, res) => {
 // Get Full Booking Report
 const getBookingReport = async (req, res) => {
     try {
-        const tenantId = req.user.tenantId;
         const { search, status, dateRange, page = 1, limit = 10 } = req.query;
+        const whereClause = getWhereClause(req, 'member');
 
         // Build AND conditions
         const andConditions = [
-            { member: { tenantId } }
+            whereClause
         ];
 
         if (status && status !== 'All') {
@@ -677,9 +859,9 @@ const getBookingReport = async (req, res) => {
         ]);
 
         const stats = {
-            total: await prisma.booking.count({ where: { member: { tenantId } } }),
-            completed: await prisma.booking.count({ where: { AND: [{ member: { tenantId } }, { status: 'Completed' }] } }),
-            cancelled: await prisma.booking.count({ where: { AND: [{ member: { tenantId } }, { status: 'Cancelled' }] } })
+            total: await prisma.booking.count({ where: whereClause }),
+            completed: await prisma.booking.count({ where: { AND: [whereClause, { status: 'Completed' }] } }),
+            cancelled: await prisma.booking.count({ where: { AND: [whereClause, { status: 'Cancelled' }] } })
         };
 
         res.json({
@@ -704,51 +886,39 @@ const getBookingReport = async (req, res) => {
 // Get Live Access Control — today's check-ins with membership/dues status
 const getLiveAccess = async (req, res) => {
     try {
-        const { tenantId, role } = req.user;
+        const tenantId = req.user.tenantId;
         const startOfDay = new Date(); startOfDay.setHours(0, 0, 0, 0);
         const endOfDay = new Date(); endOfDay.setHours(23, 59, 59, 999);
 
-        const where = role === 'SUPER_ADMIN' ? {} : { user: { tenantId } };
-
-        // Fetch today's attendance records
+        // Fetch today's attendance records for this tenant
         const records = await prisma.attendance.findMany({
-            where: { ...where, checkIn: { gte: startOfDay, lte: endOfDay } },
-            include: { user: { select: { id: true, name: true, role: true, avatar: true } } },
+            where: { ...whereClause, date: { gte: startOfDay, lte: endOfDay } },
+            include: { user: { select: { id: true, name: true, role: true } } },
             orderBy: { checkIn: 'desc' },
             take: 50
         });
 
-        // Optimization: Fetch all needed members in one go
-        const userIds = records.map(r => r.userId);
-        const members = await prisma.member.findMany({
-            where: { userId: { in: userIds }, user: { tenantId } },
-            include: { plan: true }
-        });
-
         const checkins = await Promise.all(records.map(async (r) => {
-            const memberData = members.find(m => m.userId === r.userId);
+            // Try to find member record to get expiry + dues
+            const member = await prisma.member.findFirst({
+                where: { userId: r.userId, ...whereClause },
+                include: { plan: { select: { name: true } } }
+            });
 
-            // Get outstanding dues
-            let duesAmount = 0;
-            if (memberData) {
-                const dues = await prisma.invoice.aggregate({
-                    where: { memberId: memberData.id, status: { in: ['Unpaid', 'Partial'] } },
-                    _sum: { amount: true }
-                });
-                duesAmount = parseFloat(dues._sum.amount || 0);
-            }
+            // Get outstanding dues (unpaid invoices)
+            const dues = await prisma.invoice.aggregate({
+                where: { memberId: member?.id, status: { in: ['Unpaid', 'Partial'] } },
+                _sum: { amount: true }
+            });
 
             return {
                 id: r.id,
                 member: r.user?.name || 'Unknown',
-                name: r.user?.name || 'Unknown',
-                type: r.type,
-                plan: memberData?.plan?.name || (r.type === 'Member' ? 'Standard' : r.type),
-                time: r.checkIn ? new Date(r.checkIn).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '-',
-                expiry: memberData?.expiryDate ? memberData.expiryDate.toISOString().split('T')[0] : null,
-                balance: duesAmount,
-                photo: r.user?.avatar || `https://ui-avatars.com/api/?name=${encodeURIComponent(r.user?.name || 'U')}&background=6d28d9&color=fff&size=48`,
-                status: r.checkOut ? 'Checked Out' : 'checked-in'
+                plan: member?.plan?.name || r.user?.role || 'Staff',
+                time: r.checkIn ? r.checkIn.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '-',
+                expiry: member?.expiryDate ? member.expiryDate.toISOString().split('T')[0] : null,
+                balance: parseFloat(dues._sum.amount || 0),
+                photo: `https://ui-avatars.com/api/?name=${encodeURIComponent(r.user?.name || 'U')}&background=6d28d9&color=fff&size=48`
             };
         }));
 
@@ -775,7 +945,7 @@ const getRenewalAlerts = async (req, res) => {
         // Expiring within 7 days (not yet expired)
         const expiringSoon = await prisma.member.findMany({
             where: {
-                tenantId,
+                ...whereClause,
                 status: 'Active',
                 expiryDate: { gte: today, lte: in7Days }
             },

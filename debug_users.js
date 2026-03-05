@@ -2,16 +2,16 @@ const { PrismaClient } = require('@prisma/client');
 const prisma = new PrismaClient();
 
 async function main() {
-    const leads = await prisma.lead.findMany({
+    const users = await prisma.user.findMany({
         select: {
             id: true,
             name: true,
-            nextFollowUp: true,
-            status: true,
+            email: true,
+            role: true,
             tenantId: true
         }
     });
-    console.log(JSON.stringify(leads, null, 2));
+    console.log(JSON.stringify(users, null, 2));
 }
 
 main()

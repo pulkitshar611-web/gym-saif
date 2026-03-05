@@ -17,6 +17,10 @@ async function main() {
     await prisma.membershipPlan.deleteMany();
     await prisma.user.deleteMany();
     await prisma.tenant.deleteMany();
+    await prisma.storeOrderItem.deleteMany();
+    await prisma.storeOrder.deleteMany();
+    await prisma.storeProduct.deleteMany();
+    await prisma.storeCategory.deleteMany();
 
     console.log("Database cleared.");
 
@@ -93,6 +97,34 @@ async function main() {
         }
     });
 
+    console.log("Creating store categories...");
+    // Create dummy Product Categories
+    const supplementsCategory = await prisma.storeCategory.upsert({
+        where: { id: 1 },
+        update: {},
+        create: {
+            id: 1,
+            tenantId: 1,
+            name: "Supplements",
+            description: "High quality protein, vitamins and pre-workouts",
+            sortOrder: 1,
+            status: "Active"
+        }
+    });
+
+    const accessoriesCategory = await prisma.storeCategory.upsert({
+        where: { id: 2 },
+        update: {},
+        create: {
+            id: 2,
+            tenantId: 1,
+            name: "Accessories",
+            description: "Gloves, belts, shakers and more",
+            sortOrder: 2,
+            status: "Active"
+        }
+    });
+
     // Create Dummy Trainer
     const trainer = await prisma.user.upsert({
         where: { email: 'trainer@gym.com' },
@@ -118,11 +150,11 @@ async function main() {
             price: 5000,
             duration: 12,
             durationType: 'Months',
-            benefits: [
+            benefits: JSON.stringify([
                 { name: 'Sauna', limit: 4 },
                 { name: 'Ice Bath', limit: 2 },
                 { name: 'PT Sessions', limit: 10 }
-            ]
+            ])
         }
     });
 
@@ -177,7 +209,7 @@ async function main() {
                 memberId: member.id,
                 weight: 85.0,
                 bodyFat: 22.0,
-                measurements: { chest: 100, waist: 95, arms: 35, legs: 60 },
+                measurements: JSON.stringify({ chest: 100, waist: 95, arms: 35, legs: 60 }),
                 notes: 'Baseline measurements',
                 date: new Date(new Date().setDate(new Date().getDate() - 30))
             },
@@ -185,7 +217,7 @@ async function main() {
                 memberId: member.id,
                 weight: 82.5,
                 bodyFat: 20.5,
-                measurements: { chest: 101, waist: 92, arms: 36, legs: 61 },
+                measurements: JSON.stringify({ chest: 101, waist: 92, arms: 36, legs: 61 }),
                 notes: 'Significant waist reduction',
                 date: new Date(new Date().setDate(new Date().getDate() - 15))
             },
@@ -193,7 +225,7 @@ async function main() {
                 memberId: member.id,
                 weight: 80.2,
                 bodyFat: 19.0,
-                measurements: { chest: 102, waist: 88, arms: 37, legs: 62 },
+                measurements: JSON.stringify({ chest: 102, waist: 88, arms: 37, legs: 62 }),
                 notes: 'On track for goals',
                 date: new Date()
             }
@@ -208,9 +240,8 @@ async function main() {
             name: 'Morning Power Hour',
             description: 'Intense strength training session',
             trainerId: trainer.id,
-            schedule: { days: ['Mon', 'Wed', 'Fri'], time: '09:00 AM' },
-            maxCapacity: 20,
-            location: 'Main Floor'
+            schedule: JSON.stringify({ days: ['Mon', 'Wed', 'Fri'], time: '09:00 AM' }),
+            maxCapacity: 20
         }
     });
 
@@ -220,9 +251,8 @@ async function main() {
             name: 'HIIT Blast',
             description: 'High intensity interval training',
             trainerId: trainer.id,
-            schedule: { days: ['Tue', 'Thu'], time: '10:00 AM' },
-            maxCapacity: 15,
-            location: 'Studio A'
+            schedule: JSON.stringify({ days: ['Tue', 'Thu'], time: '10:00 AM' }),
+            maxCapacity: 15
         }
     });
 
@@ -232,9 +262,8 @@ async function main() {
             name: 'Boxing Basics',
             description: 'Learn the fundamentals of boxing',
             trainerId: trainer.id,
-            schedule: { days: ['Sat'], time: '11:00 AM' },
-            maxCapacity: 10,
-            location: 'Boxing Zone'
+            schedule: JSON.stringify({ days: ['Sat'], time: '11:00 AM' }),
+            maxCapacity: 10
         }
     });
 
@@ -245,9 +274,8 @@ async function main() {
             name: 'Sauna Session',
             description: 'Relax and detox in our premium sauna',
             trainerId: null,
-            schedule: { days: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'], time: '08:00 AM - 10:00 PM' },
+            schedule: JSON.stringify({ days: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'], time: '08:00 AM - 10:00 PM' }),
             maxCapacity: 5,
-            location: 'Wellness Wing',
             requiredBenefit: 'Sauna'
         }
     });
@@ -258,9 +286,8 @@ async function main() {
             name: 'Ice Bath Session',
             description: 'Post-workout recovery session',
             trainerId: null,
-            schedule: { days: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'], time: '08:00 AM - 10:00 PM' },
+            schedule: JSON.stringify({ days: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'], time: '08:00 AM - 10:00 PM' }),
             maxCapacity: 2,
-            location: 'Wellness Wing',
             requiredBenefit: 'Ice Bath'
         }
     });
@@ -297,6 +324,46 @@ async function main() {
             targetRole: 'member',
             authorId: superadmin.id
         }
+    });
+
+    // Create dummy Coupons
+    await prisma.coupon.deleteMany();
+    await prisma.coupon.createMany({
+        data: [
+            {
+                tenantId: testGym.id,
+                code: 'WELCOME10',
+                description: 'Welcome discount for new members',
+                type: 'Percentage',
+                value: 10,
+                minPurchase: 1000,
+                maxUses: 100,
+                usedCount: 45,
+                status: 'Active'
+            },
+            {
+                tenantId: testGym.id,
+                code: 'FESTIVE500',
+                description: 'Special festive fixed discount',
+                type: 'Fixed',
+                value: 500,
+                minPurchase: 5000,
+                maxUses: 50,
+                usedCount: 12,
+                status: 'Active'
+            },
+            {
+                tenantId: testGym.id,
+                code: 'SUMMER20',
+                description: 'Limited time summer offer',
+                type: 'Percentage',
+                value: 20,
+                minPurchase: 2000,
+                maxUses: 200,
+                usedCount: 198,
+                status: 'Active'
+            }
+        ]
     });
 
     console.log("Seeding completed successfully.");

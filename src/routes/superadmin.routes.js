@@ -50,8 +50,7 @@ const {
     updateStaffMember,
     addDevice,
     updateDevice,
-    deleteDevice,
-    getMySubscription
+    deleteDevice
 } = require('../controllers/superadmin.controller');
 const { protect, authorize } = require('../middleware/auth.middleware');
 const { checkSaaSLimit } = require('../middleware/saas.middleware');
@@ -62,7 +61,6 @@ router.use(protect);
 
 // Gyms - Allow both Superadmin and Branch Admin (Branch Admin filtered in controller)
 router.get('/gyms', authorize('SUPER_ADMIN', 'BRANCH_ADMIN', 'MANAGER'), getAllGyms);
-router.get('/my-subscription', authorize('BRANCH_ADMIN', 'MANAGER'), getMySubscription);
 router.post('/gyms', authorize('SUPER_ADMIN', 'BRANCH_ADMIN'), checkSaaSLimit('branches'), addGym);
 router.patch('/gyms/:id', authorize('SUPER_ADMIN', 'BRANCH_ADMIN'), updateGym);
 router.delete('/gyms/:id', authorize('SUPER_ADMIN', 'BRANCH_ADMIN'), deleteGym);
@@ -76,12 +74,6 @@ router.get('/staff', authorize('SUPER_ADMIN', 'BRANCH_ADMIN', 'MANAGER'), getSta
 router.post('/staff', authorize('SUPER_ADMIN', 'BRANCH_ADMIN'), addStaffMember);
 router.delete('/staff/:id', authorize('SUPER_ADMIN', 'BRANCH_ADMIN'), deleteStaffMember);
 router.patch('/staff/:id', authorize('SUPER_ADMIN', 'BRANCH_ADMIN'), updateStaffMember);
-
-// Devices
-router.get('/devices', authorize('SUPER_ADMIN', 'BRANCH_ADMIN', 'MANAGER'), getDevices);
-router.post('/devices', authorize('SUPER_ADMIN', 'BRANCH_ADMIN'), addDevice);
-router.patch('/devices/:id', authorize('SUPER_ADMIN', 'BRANCH_ADMIN'), updateDevice);
-router.delete('/devices/:id', authorize('SUPER_ADMIN', 'BRANCH_ADMIN'), deleteDevice);
 
 
 // Restrict all other routes to SUPER_ADMIN only
@@ -116,7 +108,11 @@ router.get('/logs/error', getErrorLogs);
 router.get('/logs/hardware', getHardwareLogs);
 router.get('/reports/gst', getGSTReports);
 
-// Settings
+// Devices & Settings
+router.get('/devices', getDevices);
+router.post('/devices', addDevice);
+router.patch('/devices/:id', updateDevice);
+router.delete('/devices/:id', deleteDevice);
 router.get('/settings/global', getGlobalSettings);
 router.patch('/settings/global', updateGlobalSettings);
 router.get('/settings/invoice', getInvoiceSettings);

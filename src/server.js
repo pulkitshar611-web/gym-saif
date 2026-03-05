@@ -1,14 +1,19 @@
 // gym_backend/src/server.js
 const app = require('./app');
-require('./utils/cronJobs');
-const http = require('http');
-const { initSocket } = require('./utils/socket');
-const server = http.createServer(app);
-
-initSocket(server);
+// Trigger restart
 
 const PORT = process.env.PORT || 8000;
 
-server.listen(PORT, () => {
-    console.log(`Server is running on port ${PORT}`);
+const server = app.listen(PORT, () => {
+    console.log(`Server successfully started and listening on port ${PORT}`);
+    console.log(`PID: ${process.pid}`);
+});
+
+server.on('error', (err) => {
+    console.error('SERVER ERROR:', err);
+    process.exit(1);
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+    console.error('Unhandled Rejection at:', promise, 'reason:', reason);
 });

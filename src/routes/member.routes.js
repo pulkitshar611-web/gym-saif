@@ -25,7 +25,12 @@ const {
     getDietPlans,
     deleteSavedCard,
     getRewardCatalog,
-    redeemReward
+    redeemReward,
+    getMyReferrals,
+    getMemberDashboard,
+    updateMemberProfile,
+    changePassword,
+    getMemberAttendance
 } = require('../controllers/member.controller');
 const {
     getProgress,
@@ -40,6 +45,10 @@ router.use(protect);
 // Most member routes are only for members, but some are shared
 const memberOnly = authorize('MEMBER');
 const memberOrTrainer = authorize('MEMBER', 'TRAINER');
+const managementOrMemberOrTrainer = authorize('SUPER_ADMIN', 'BRANCH_ADMIN', 'MANAGER', 'MEMBER', 'TRAINER');
+
+// Dashboard
+router.get('/dashboard', memberOnly, getMemberDashboard);
 
 // Membership
 router.post('/plan/upgrade', memberOnly, upgradePlan);
@@ -50,11 +59,14 @@ router.get('/membership-details', memberOnly, getMembershipDetails);
 router.get('/service-requests', memberOnly, getServiceRequests);
 router.post('/service-requests', memberOnly, addServiceRequest);
 router.get('/profile', memberOnly, getMemberProfile);
+router.put('/profile', memberOnly, updateMemberProfile);
+router.post('/change-password', memberOnly, changePassword);
+router.get('/attendance', memberOnly, getMemberAttendance);
 router.get('/classes', memberOnly, getAvailableClasses);
 
 // Progress
-router.get('/progress', memberOrTrainer, getProgress);
-router.post('/progress', memberOrTrainer, logProgress);
+router.get('/progress', managementOrMemberOrTrainer, getProgress);
+router.post('/progress', managementOrMemberOrTrainer, logProgress);
 
 // Wallet & Payments
 router.get('/wallet/transactions', memberOnly, getWalletTransactions);
@@ -77,9 +89,12 @@ router.patch('/bookings/:id/reschedule', memberOnly, rescheduleBooking);
 router.delete('/bookings/:id', memberOnly, cancelBooking);
 
 // Workout Plans
-router.get('/workout-plans', memberOnly, getWorkoutPlans);
+router.get('/workout-plans', managementOrMemberOrTrainer, getWorkoutPlans);
 
 // Diet Plans
-router.get('/diet-plans', memberOnly, getDietPlans);
+router.get('/diet-plans', managementOrMemberOrTrainer, getDietPlans);
+
+// Referrals
+router.get('/referrals', memberOnly, getMyReferrals);
 
 module.exports = router;
