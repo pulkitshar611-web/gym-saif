@@ -2846,7 +2846,7 @@ const runReminders = async (req, res) => {
 const getAllServiceRequests = async (req, res) => {
     try {
         const { status, type, branchId: queryBranchId } = req.query;
-        const { tenantId: userTenantId, role } = req.user;
+        const { tenantId: userTenantId, role, email, name: userName } = req.user;
         const headerTenantId = req.headers['x-tenant-id'];
 
         const effectiveBranchId = queryBranchId || headerTenantId;
@@ -2866,7 +2866,19 @@ const getAllServiceRequests = async (req, res) => {
             if (effectiveBranchId && effectiveBranchId !== 'all') {
                 where.tenantId = parseInt(effectiveBranchId);
             } else {
-                where.tenantId = userTenantId || 1;
+                // Determine all branches this user can access
+                const branches = await prisma.tenant.findMany({
+                    where: {
+                        OR: [
+                            { id: userTenantId || undefined },
+                            { owner: email || undefined },
+                            { owner: userName || undefined }
+                        ].filter(cond => Object.values(cond)[0] !== undefined)
+                    },
+                    select: { id: true }
+                });
+                const managedBranchIds = branches.map(b => b.id);
+                where.tenantId = { in: managedBranchIds };
             }
         }
 
