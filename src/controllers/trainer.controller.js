@@ -121,8 +121,14 @@ const getAssignedMembers = async (req, res) => {
             }
         });
 
-        // The frontend expects specific data maps (attendance, sessionsDone). 
-        const mapped = members.map(m => {
+        const mapped = await Promise.all(members.map(async m => {
+            // Fetch active workout plan name
+            const activePlan = await prisma.workoutPlan.findFirst({
+                where: { clientId: m.id, status: 'Active' },
+                select: { name: true },
+                orderBy: { createdAt: 'desc' }
+            });
+
             // Check recent attendance or bookings for 'lastSession'
             const lastAttendance = m.attendances && m.attendances.length > 0 ? m.attendances[0] : null;
             const recentWorkouts = (m.bookings || []).map(b => ({
@@ -137,6 +143,7 @@ const getAssignedMembers = async (req, res) => {
                 memberId: m.memberId,
                 name: m.name,
                 plan: m.plan?.name || 'N/A',
+                assignedProtocol: activePlan ? activePlan.name : 'None',
                 status: m.status,
                 attendance: lastAttendance ? `${new Date(lastAttendance.date).toLocaleDateString()}` : 'N/A',
                 lastSession: lastAttendance ? 'Recent' : (m.bookings?.length > 0 ? 'Upcoming' : 'None'),
@@ -145,12 +152,12 @@ const getAssignedMembers = async (req, res) => {
                 email: m.email,
                 phone: m.phone,
                 goal: m.fitnessGoal || 'General Fitness',
-                isFlagged: false, // Default logic or custom logic
+                isFlagged: false,
                 recentWorkouts: recentWorkouts.length > 0 ? recentWorkouts : [
                     { date: new Date().toLocaleDateString(), time: '09:00 AM', status: 'N/A', type: 'No past workouts' }
                 ]
             };
-        });
+        }));
 
         res.json(mapped);
     } catch (error) {
@@ -164,12 +171,109 @@ const getMemberById = async (req, res) => {
         const { id } = req.params;
         const member = await prisma.member.findUnique({
             where: { id: parseInt(id) },
-            include: { plan: true }
+            include: {
+                plan: true,
+                tenant: true,
+                attendances: { orderBy: { date: 'desc' }, take: 50 },
+                bookings: { orderBy: { date: 'desc' }, include: { class: true } }
+            }
         });
+
         if (!member || member.trainerId !== req.user.id) {
             return res.status(403).json({ message: 'Unauthorized or not found' });
         }
-        res.json(member);
+
+        // Fetch additional member data
+        const progress = await prisma.memberProgress.findMany({
+            where: { memberId: member.id },
+            orderBy: { date: 'desc' },
+            take: 10
+        });
+
+        const dietPlan = await prisma.dietPlan.findFirst({
+            where: { clientId: member.id, status: 'Active' },
+            orderBy: { createdAt: 'desc' }
+        });
+
+        const workoutPlan = await prisma.workoutPlan.findFirst({
+            where: { clientId: member.id, status: 'Active' },
+            orderBy: { createdAt: 'desc' }
+        });
+
+        console.log(`Debug - Member ID: ${member.id}, Name: ${member.name}`);
+        console.log(`Debug - Workout Plan found:`, workoutPlan ? workoutPlan.name : 'None');
+
+        const now = new Date();
+        const totalVisits = member.attendances?.length || 0;
+        const visitsThisMonth = (member.attendances || []).filter(a => {
+            const date = new Date(a.date);
+            return date.getMonth() === now.getMonth() && date.getFullYear() === now.getFullYear();
+        }).length;
+
+        const daysElapsed = now.getDate();
+        const consistencyPct = daysElapsed > 0 ? Math.min(100, Math.round((visitsThisMonth / daysElapsed) * 100)) : 0;
+
+        const sessionsDone = (member.bookings || []).filter(b => b.status === 'Completed').length;
+        const totalSessions = member.bookings?.length || 0;
+
+        const recentWorkouts = (member.bookings || []).map(b => ({
+            id: b.id,
+            name: b.class?.name || 'Workout Session',
+            date: new Date(b.date).toLocaleDateString(),
+            duration: b.class?.duration || '60 min',
+            calories: Math.floor(Math.random() * 300) + 200, // Placeholder
+            status: b.status
+        })).slice(0, 5);
+
+        const effortValue = consistencyPct > 80 ? 'Elite' : (consistencyPct > 60 ? 'High' : (consistencyPct > 40 ? 'Moderate' : 'Developing'));
+
+        const mapped = {
+            id: member.id,
+            memberId: member.memberId,
+            name: member.name,
+            plan: member.plan?.name || 'No Active Plan',
+            status: member.status,
+            attendance: consistencyPct,
+            sessionsDone: sessionsDone,
+            totalSessions: totalSessions,
+            effort: effortValue,
+            expiry: member.expiryDate ? new Date(member.expiryDate).toLocaleDateString('en-US', { day: 'numeric', month: 'short' }) : 'N/A',
+            goal: member.fitnessGoal || 'General Fitness',
+            email: member.email,
+            phone: member.phone,
+            location: member.tenant?.name || 'Main Hub',
+            targetWeight: member.targetWeight,
+            targetBodyFat: member.targetBodyFat,
+            recentWorkouts: recentWorkouts,
+            progress: progress.map(p => ({
+                id: p.id,
+                date: p.date,
+                weight: p.weight ? parseFloat(p.weight) : null,
+                bodyFat: p.bodyFat ? parseFloat(p.bodyFat) : null,
+                measurements: p.measurements ? (typeof p.measurements === 'string' ? JSON.parse(p.measurements) : p.measurements) : null
+            })),
+            dietPlan: dietPlan ? {
+                id: dietPlan.id,
+                name: dietPlan.name,
+                target: dietPlan.target,
+                calories: dietPlan.calories,
+                status: dietPlan.status
+            } : null,
+            workoutPlan: workoutPlan ? {
+                id: workoutPlan.id,
+                name: workoutPlan.name,
+                goal: workoutPlan.goal,
+                level: workoutPlan.level,
+                duration: workoutPlan.duration,
+                volume: workoutPlan.volume,
+                timePerSession: workoutPlan.timePerSession,
+                intensity: workoutPlan.intensity,
+                status: workoutPlan.status,
+                days: workoutPlan.days ? (typeof workoutPlan.days === 'string' ? JSON.parse(workoutPlan.days) : workoutPlan.days) : {}
+            } : null
+        };
+
+        res.json(mapped);
     } catch (error) {
         res.status(500).json({ message: error.message });
     }
@@ -746,7 +850,7 @@ const getClassByIdForTrainer = async (req, res) => {
 const getDietPlans = async (req, res) => {
     try {
         const plans = await prisma.dietPlan.findMany({
-            where: { trainerId: req.user.id, tenantId: req.user.tenantId || 1 },
+            where: { trainerId: req.user.id, tenantId: req.user.tenantId || 1, clientId: 0 },
             orderBy: { createdAt: 'desc' }
         });
         res.json(plans);
@@ -757,14 +861,25 @@ const getDietPlans = async (req, res) => {
 
 const createDietPlan = async (req, res) => {
     try {
-        const { clientId, name, target, duration, calories, macros, meals, notes, status } = req.body;
+        console.log('Debug - Creating Diet Plan, Body:', JSON.stringify(req.body, null, 2));
+        const { clientId, name, target, duration, calories, macros, meals, notes, status, startDate, endDate } = req.body;
+
+        const finalClientId = parseInt(clientId);
+        if (isNaN(finalClientId)) {
+            return res.status(400).json({ message: 'Invalid or missing clientId' });
+        }
+
         const plan = await prisma.dietPlan.create({
             data: {
                 tenantId: req.user.tenantId || 1,
                 trainerId: req.user.id,
-                clientId: parseInt(clientId),
+                clientId: finalClientId,
                 name, target, duration: String(duration), calories: parseInt(calories) || 0,
-                macros: macros || {}, meals: meals || [], notes, status: status || 'Active'
+                macros: typeof macros === 'object' ? JSON.stringify(macros) : macros || '{}',
+                meals: typeof meals === 'object' ? JSON.stringify(meals) : meals || '[]',
+                notes, status: status || 'Active',
+                startDate: startDate ? new Date(startDate) : null,
+                endDate: endDate ? new Date(endDate) : null
             }
         });
         res.status(201).json(plan);
@@ -776,13 +891,17 @@ const createDietPlan = async (req, res) => {
 const updateDietPlan = async (req, res) => {
     try {
         const { id } = req.params;
-        const { clientId, name, target, duration, calories, macros, meals, notes, status } = req.body;
+        const { clientId, name, target, duration, calories, macros, meals, notes, status, startDate, endDate } = req.body;
         const plan = await prisma.dietPlan.update({
             where: { id },
             data: {
                 clientId: parseInt(clientId),
                 name, target, duration: String(duration), calories: parseInt(calories) || 0,
-                macros: macros || {}, meals: meals || [], notes, status
+                macros: typeof macros === 'object' ? JSON.stringify(macros) : macros,
+                meals: typeof meals === 'object' ? JSON.stringify(meals) : meals,
+                notes, status,
+                startDate: startDate ? new Date(startDate) : null,
+                endDate: endDate ? new Date(endDate) : null
             }
         });
         res.json(plan);
@@ -809,7 +928,7 @@ const toggleDietPlanStatus = async (req, res) => {
 const getWorkoutPlans = async (req, res) => {
     try {
         const plans = await prisma.workoutPlan.findMany({
-            where: { trainerId: req.user.id, tenantId: req.user.tenantId || 1 },
+            where: { trainerId: req.user.id, tenantId: req.user.tenantId || 1, clientId: 0 },
             orderBy: { createdAt: 'desc' }
         });
         res.json(plans);
@@ -820,15 +939,25 @@ const getWorkoutPlans = async (req, res) => {
 
 const createWorkoutPlan = async (req, res) => {
     try {
-        const { clientId, name, level, duration, goal, volume, timePerSession, intensity, status, days } = req.body;
+        console.log('Debug - Creating Workout Plan, Body:', JSON.stringify(req.body, null, 2));
+        const { clientId, name, level, duration, goal, volume, timePerSession, intensity, status, days, startDate, endDate } = req.body;
+
+        const finalClientId = parseInt(clientId);
+        if (isNaN(finalClientId)) {
+            return res.status(400).json({ message: 'Invalid or missing clientId' });
+        }
+
         const plan = await prisma.workoutPlan.create({
             data: {
                 tenantId: req.user.tenantId || 1,
                 trainerId: req.user.id,
-                clientId: parseInt(clientId),
+                clientId: finalClientId,
                 name, level: level || 'Beginner', duration: String(duration), goal: goal || '',
                 volume: volume || '', timePerSession: timePerSession || '', intensity: intensity || '',
-                status: status || 'Active', days: days || {}
+                status: status || 'Active',
+                days: typeof days === 'object' ? JSON.stringify(days) : days || '{}',
+                startDate: startDate ? new Date(startDate) : null,
+                endDate: endDate ? new Date(endDate) : null
             }
         });
         res.status(201).json(plan);
@@ -840,12 +969,15 @@ const createWorkoutPlan = async (req, res) => {
 const updateWorkoutPlan = async (req, res) => {
     try {
         const { id } = req.params;
-        const { clientId, name, level, duration, goal, volume, timePerSession, intensity, status, days } = req.body;
+        const { clientId, name, level, duration, goal, volume, timePerSession, intensity, status, days, startDate, endDate } = req.body;
         const plan = await prisma.workoutPlan.update({
             where: { id },
             data: {
                 clientId: parseInt(clientId),
-                name, level, duration: String(duration), goal, volume, timePerSession, intensity, status, days
+                name, level, duration: String(duration), goal, volume, timePerSession, intensity, status,
+                days: typeof days === 'object' ? JSON.stringify(days) : days,
+                startDate: startDate ? new Date(startDate) : null,
+                endDate: endDate ? new Date(endDate) : null
             }
         });
         res.json(plan);

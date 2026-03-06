@@ -1,12 +1,12 @@
 const { PrismaClient } = require('@prisma/client');
 const prisma = new PrismaClient();
 
-async function checkMembers() {
+async function checkWorkoutPlans() {
     try {
-        const members = await prisma.member.findMany({
-            select: { id: true, name: true, memberId: true }
+        const plans = await prisma.workoutPlan.findMany({
+            orderBy: { createdAt: 'desc' }
         });
-        console.log(JSON.stringify(members, null, 2));
+        console.log(JSON.stringify(plans, null, 2));
     } catch (err) {
         console.error(err);
     } finally {
@@ -14,4 +14,4 @@ async function checkMembers() {
     }
 }
 
-checkMembers();
+checkWorkoutPlans();

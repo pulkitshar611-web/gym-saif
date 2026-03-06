@@ -601,13 +601,25 @@ const getWorkoutPlans = async (req, res) => {
             }
         }
 
+        // Auto-expire plans where endDate has passed
+        await prisma.workoutPlan.updateMany({
+            where: {
+                clientId: member.id,
+                status: 'Active',
+                endDate: { lt: new Date() }
+            },
+            data: { status: 'Expired' }
+        });
+
         const plans = await prisma.workoutPlan.findMany({
             where: { clientId: member.id, status: 'Active' },
             orderBy: { createdAt: 'desc' }
         });
 
+        console.log(`Debug - Member ${member.id} workout plans found:`, plans.length);
         res.json(plans);
     } catch (error) {
+        console.error('getWorkoutPlans error:', error);
         res.status(500).json({ message: error.message });
     }
 };
@@ -645,13 +657,25 @@ const getDietPlans = async (req, res) => {
             }
         }
 
+        // Auto-expire plans where endDate has passed
+        await prisma.dietPlan.updateMany({
+            where: {
+                clientId: member.id,
+                status: 'Active',
+                endDate: { lt: new Date() }
+            },
+            data: { status: 'Expired' }
+        });
+
         const plans = await prisma.dietPlan.findMany({
             where: { clientId: member.id, status: 'Active' },
             orderBy: { createdAt: 'desc' }
         });
 
+        console.log(`Debug - Member ${member.id} diet plans found:`, plans.length);
         res.json(plans);
     } catch (error) {
+        console.error('getDietPlans error:', error);
         res.status(500).json({ message: error.message });
     }
 };

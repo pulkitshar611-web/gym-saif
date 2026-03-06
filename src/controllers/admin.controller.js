@@ -21,6 +21,8 @@ const getAllMembers = async (req, res) => {
             if (effectiveBranchId && effectiveBranchId !== 'all') {
                 where.tenantId = parseInt(effectiveBranchId);
             }
+        } else if (role === 'TRAINER') {
+            where.trainerId = req.user.id;
         } else {
             // Logic for BRANCH_ADMIN and MANAGER
             if (effectiveBranchId && effectiveBranchId !== 'all') {

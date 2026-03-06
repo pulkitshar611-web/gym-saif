@@ -703,40 +703,44 @@ model Feedback {
 }
 
 model DietPlan {
-  id        String   @id @default(uuid())
-  tenantId  Int      @default(1)
+  id        String    @id @default(uuid())
+  tenantId  Int       @default(1)
   trainerId Int
   clientId  Int
   name      String
   target    String
   duration  String
   calories  Int
-  macros    String   @db.LongText
-  meals     String   @db.LongText
-  notes     String?  @db.Text
-  status    String   @default("Active")
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  macros    String    @db.LongText
+  meals     String    @db.LongText
+  notes     String?   @db.Text
+  status    String    @default("Active")
+  startDate DateTime?
+  endDate   DateTime?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
 
   @@map("diet_plan")
 }
 
 model WorkoutPlan {
-  id             String   @id @default(uuid())
-  tenantId       Int      @default(1)
+  id             String    @id @default(uuid())
+  tenantId       Int       @default(1)
   trainerId      Int
   clientId       Int
   name           String
-  level          String   @default("Beginner")
+  level          String    @default("Beginner")
   duration       String
   goal           String
   volume         String
   timePerSession String
   intensity      String
-  status         String   @default("Active")
-  days           String   @db.LongText
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
+  status         String    @default("Active")
+  days           String    @db.LongText
+  startDate      DateTime?
+  endDate        DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
 
   @@map("workout_plan")
 }
