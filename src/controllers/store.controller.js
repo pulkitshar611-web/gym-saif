@@ -92,6 +92,11 @@ exports.getStoreStats = async (req, res) => {
 
         const today = new Date();
         today.setHours(0, 0, 0, 0);
+        const yesterday = new Date(today);
+        yesterday.setDate(yesterday.getDate() - 1);
+        const monthStart = new Date(today.getFullYear(), today.getMonth(), 1);
+        const lastMonthStart = new Date(today.getFullYear(), today.getMonth() - 1, 1);
+        const lastMonthEnd = new Date(today.getFullYear(), today.getMonth(), 0, 23, 59, 59, 999);
 
         const [products, orders, categoriesCount] = await Promise.all([
             prisma.storeProduct.findMany({ where: { tenantId: { in: targetTenantIds } } }),
@@ -107,20 +112,75 @@ exports.getStoreStats = async (req, res) => {
         const lowStockCount = products.filter(p => p.stock < 10).length;
         const stockValue = products.reduce((acc, p) => acc + (parseFloat(p.price) * p.stock), 0);
 
-        const todayOrders = orders.filter(o => new Date(o.createdAt) >= today);
+        // --- Current Period Metrics ---
+        const todayOrders = orders.filter(o => new Date(o.createdAt || o.date) >= today);
         const todayPos = todayOrders.reduce((acc, o) => acc + parseFloat(o.total || 0), 0);
+        
+        const thisMonthOrders = orders.filter(o => new Date(o.createdAt || o.date) >= monthStart);
         const totalRevenue = orders.reduce((acc, o) => acc + parseFloat(o.total || 0), 0);
         const totalSales = orders.length;
 
-        // Simple profit calculation: (Price - Cost) * Quantity for all sales
-        let totalProfit = 0;
-        orders.forEach(order => {
-            order.items.forEach(item => {
-                const cost = parseFloat(item.product?.costPrice || 0);
-                const price = parseFloat(item.priceAtBuy || 0);
-                totalProfit += (price - cost) * item.quantity;
+        // --- Profit Calculation ---
+        const calculateProfit = (orderList) => {
+            let profit = 0;
+            orderList.forEach(order => {
+                order.items.forEach(item => {
+                    const cost = parseFloat(item.product?.costPrice || 0);
+                    const price = parseFloat(item.priceAtBuy || item.product?.price || 0);
+                    profit += (price - cost) * item.quantity;
+                });
             });
+            return profit;
+        };
+
+        const totalProfitFiltered = calculateProfit(orders);
+        const thisMonthProfit = calculateProfit(thisMonthOrders);
+
+        // --- Trend Calculations ---
+        
+        // POS Trend (Today vs Yesterday)
+        const yesterdayOrders = orders.filter(o => {
+            const d = new Date(o.createdAt || o.date);
+            return d >= yesterday && d < today;
         });
+        const yesterdayPos = yesterdayOrders.reduce((acc, o) => acc + parseFloat(o.total || 0), 0);
+        let posTrend = { value: "0% vs yesterday", direction: "stable" };
+        if (yesterdayPos > 0) {
+            const diff = ((todayPos - yesterdayPos) / yesterdayPos) * 100;
+            posTrend = { 
+                value: `${diff >= 0 ? '+' : ''}${Math.round(diff)}% vs yesterday`, 
+                direction: diff > 0 ? 'up' : diff < 0 ? 'down' : 'stable' 
+            };
+        } else if (todayPos > 0) {
+            posTrend = { value: `+₹${todayPos.toLocaleString()} today`, direction: 'up' };
+        }
+
+        // Monthly Trends (Current Month vs Last Month)
+        const lastMonthOrders = orders.filter(o => {
+            const d = new Date(o.createdAt || o.date);
+            return d >= lastMonthStart && d <= lastMonthEnd;
+        });
+        
+        const lastMonthRevenue = lastMonthOrders.reduce((acc, o) => acc + parseFloat(o.total || 0), 0);
+        const lastMonthProfit = calculateProfit(lastMonthOrders);
+        const lastMonthSalesCount = lastMonthOrders.length;
+
+        const getTrend = (current, previous, label = "vs last month") => {
+            if (previous === 0) {
+                return current > 0 ? { value: `New growth`, direction: 'up' } : { value: "No change", direction: 'stable' };
+            }
+            const diff = ((current - previous) / previous) * 100;
+            return {
+                value: `${diff >= 0 ? '+' : ''}${Math.round(diff)}% ${label}`,
+                direction: diff > 0 ? 'up' : diff < 0 ? 'down' : 'stable'
+            };
+        };
+
+        const revenueTrend = getTrend(totalRevenue - lastMonthRevenue, lastMonthRevenue); // Comparing this month's contribution vs last month is tricky since totalRevenue is cumulative. Let's compare Month-to-Month.
+        
+        // Better: Compare THIS MONTH vs LAST MONTH
+        const thisMonthRevenue = thisMonthOrders.reduce((acc, o) => acc + parseFloat(o.total || 0), 0);
+        const thisMonthSalesCount = thisMonthOrders.length;
 
         res.json({
             stats: {
@@ -128,12 +188,17 @@ exports.getStoreStats = async (req, res) => {
                 productsCount: totalProducts,
                 todayPos,
                 totalRevenue,
-                profit: totalProfit,
+                profit: totalProfitFiltered,
                 stockValue,
                 lowStockCount,
                 categoriesCount,
                 pendingOrders: orders.filter(o => o.status === 'Pending').length,
-                todaySalesCount: todayOrders.length
+                todaySalesCount: todayOrders.length,
+                // Trends
+                posTrend: posTrend,
+                revenueTrend: getTrend(thisMonthRevenue, lastMonthRevenue),
+                salesTrend: getTrend(thisMonthSalesCount, lastMonthSalesCount),
+                profitTrend: getTrend(thisMonthProfit, lastMonthProfit)
             },
             recentTransactions: orders.slice(0, 5).map(o => ({
                 id: o.id.toString(),
