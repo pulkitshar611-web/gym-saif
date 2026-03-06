@@ -110,11 +110,19 @@ const getInvoices = async (req, res) => {
         if (search) {
             listWhere.OR = [
                 { invoiceNumber: { contains: search } },
-                { member: { name: { contains: search } } }
+                { member: { name: { contains: search } } },
+                { guestName: { contains: search } }
             ];
         }
 
-        const [invoices, allInvoices] = await Promise.all([
+        let storeWhere = { ...listWhere };
+        if (statusFilter === 'Paid') {
+            storeWhere.status = 'Completed';
+        } else if (statusFilter === 'Unpaid') {
+            storeWhere.status = 'Processing';
+        }
+
+        const [invoices, allInvoices, storeOrdersFull, allStoreOrders] = await Promise.all([
             prisma.invoice.findMany({
                 where: listWhere,
                 include: { member: true, items: true, tenant: { select: { name: true } } },
@@ -123,20 +131,57 @@ const getInvoices = async (req, res) => {
             prisma.invoice.findMany({
                 where: branchWhere,
                 select: { id: true, amount: true, status: true, memberId: true }
+            }),
+            prisma.storeOrder.findMany({
+                where: storeWhere,
+                include: { member: true, items: { include: { product: true } }, tenant: { select: { name: true } } },
+                orderBy: { date: 'desc' }
+            }),
+            prisma.storeOrder.findMany({
+                where: branchWhere,
+                select: { id: true, total: true, status: true, memberId: true }
             })
         ]);
 
-        const uniqueClients = new Set(allInvoices.filter(i => i.memberId).map(i => i.memberId)).size;
-        const totalPaid = allInvoices.filter(i => i.status === 'Paid').reduce((acc, i) => acc + Number(i.amount), 0);
-        const totalUnpaid = allInvoices.filter(i => i.status !== 'Paid').reduce((acc, i) => acc + Number(i.amount), 0);
+        const mappedPOS = storeOrdersFull.map(order => ({
+            id: `pos-${order.id}`,
+            internalId: order.id,
+            type: 'POS Sale',
+            invoiceNumber: `POS-#${order.id}`,
+            amount: order.total,
+            status: order.status === 'Completed' || order.status === 'Processing' ? 'Paid' : 'Unpaid',
+            dueDate: order.date,
+            paidDate: order.date,
+            member: order.member || { name: order.guestName || 'Walk-in Guest', memberId: 'GUEST' },
+            tenant: order.tenant,
+            items: order.items.map(i => ({
+                description: i.product?.name || 'Store Product',
+                quantity: i.quantity,
+                rate: i.priceAtBuy,
+                amount: Number(i.quantity) * Number(i.priceAtBuy)
+            })),
+            paymentMode: order.paymentMode
+        }));
+
+        const combinedInvoices = [...invoices, ...mappedPOS].sort((a, b) => new Date(b.dueDate) - new Date(a.dueDate));
+
+        const uniqueInvoicingClients = new Set(allInvoices.filter(i => i.memberId).map(i => i.memberId));
+        const uniqueStoreClients = new Set(allStoreOrders.filter(o => o.memberId).map(o => o.memberId));
+        const combinedClients = new Set([...uniqueInvoicingClients, ...uniqueStoreClients]).size;
+
+        const totalPaidInvoices = allInvoices.filter(i => i.status === 'Paid').reduce((acc, i) => acc + Number(i.amount), 0);
+        const totalPaidStore = allStoreOrders.filter(o => o.status === 'Paid' || o.status === 'Processing').reduce((acc, o) => acc + Number(o.total), 0);
+
+        const totalUnpaidInvoices = allInvoices.filter(i => i.status !== 'Paid').reduce((acc, i) => acc + Number(i.amount), 0);
+        const totalUnpaidStore = allStoreOrders.filter(o => o.status !== 'Paid' && o.status !== 'Processing').reduce((acc, o) => acc + Number(o.total), 0);
 
         res.status(200).json({
-            invoices,
+            invoices: combinedInvoices,
             stats: {
-                clients: uniqueClients,
-                totalInvoices: allInvoices.length,
-                paid: totalPaid,
-                unpaid: totalUnpaid
+                clients: combinedClients,
+                totalInvoices: allInvoices.length + allStoreOrders.length,
+                paid: totalPaidInvoices + totalPaidStore,
+                unpaid: totalUnpaidInvoices + totalUnpaidStore
             }
         });
     } catch (error) {
@@ -216,9 +261,11 @@ const receivePayment = async (req, res) => {
                 memberId: parseInt(memberId),
                 amount: finalAmount,
                 paymentMode: method || 'Cash',
+                referenceNumber: referenceNumber || null,
                 status: 'Paid',
                 dueDate: new Date(),
-                paidDate: new Date()
+                paidDate: new Date(),
+                notes: notes || null
             },
             include: { member: true }
         });
@@ -230,6 +277,45 @@ const receivePayment = async (req, res) => {
     } catch (error) {
         console.error('Error receiving payment:', error);
         res.status(500).json({ message: 'Failed to process payment' });
+    }
+};
+
+// Settle an existing unpaid invoice
+const settleInvoice = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { method, referenceNumber, amount, date } = req.body;
+        const { tenantId, role } = req.user;
+
+        const invoice = await prisma.invoice.findUnique({
+            where: { id: parseInt(id) }
+        });
+
+        if (!invoice) return res.status(404).json({ message: 'Invoice not found' });
+
+        // Authorization check
+        if (role !== 'SUPER_ADMIN' && invoice.tenantId !== tenantId) {
+            return res.status(403).json({ message: 'Not authorized to update this invoice' });
+        }
+
+        const updatedInvoice = await prisma.invoice.update({
+            where: { id: parseInt(id) },
+            data: {
+                paymentMode: method || 'Cash',
+                referenceNumber: referenceNumber || null,
+                status: 'Paid',
+                paidDate: date ? new Date(date) : new Date(),
+                // If partial payment was implemented, we'd handle it here
+            }
+        });
+
+        res.json({
+            message: 'Invoice settled successfully',
+            invoice: updatedInvoice
+        });
+    } catch (error) {
+        console.error('Error settling invoice:', error);
+        res.status(500).json({ message: error.message });
     }
 };
 
@@ -280,13 +366,34 @@ const getTransactions = async (req, res) => {
             ];
         }
 
-        const invoices = await prisma.invoice.findMany({
-            where,
-            include: { member: true, tenant: { select: { name: true } } },
-            orderBy: { paidDate: 'desc' }
-        });
+        const storeWhere = {
+            tenantId: where.tenantId,
+            status: status && status !== 'All Status' ? status : undefined,
+            paymentMode: method && method !== 'All Methods' ? method : undefined,
+            date: where.paidDate
+        };
 
-        const formatted = invoices.map(inv => ({
+        if (search) {
+            storeWhere.OR = [
+                { guestName: { contains: search } },
+                { member: { name: { contains: search } } }
+            ];
+        }
+
+        const [invoices, storeOrders] = await Promise.all([
+            prisma.invoice.findMany({
+                where,
+                include: { member: true, tenant: { select: { name: true } } },
+                orderBy: { paidDate: 'desc' }
+            }),
+            prisma.storeOrder.findMany({
+                where: storeWhere,
+                include: { member: true, tenant: { select: { name: true } } },
+                orderBy: { date: 'desc' }
+            })
+        ]);
+
+        const formattedInvoices = invoices.map(inv => ({
             id: inv.invoiceNumber,
             internalId: inv.id,
             member: inv.member ? inv.member.name : 'Unknown',
@@ -295,29 +402,40 @@ const getTransactions = async (req, res) => {
             amount: Number(inv.amount),
             date: inv.paidDate || inv.dueDate,
             status: inv.status,
-            branch: inv.tenant?.name || 'Main Branch'
+            branch: inv.tenant?.name || 'Main Branch',
+            flow: 'in'
         }));
+
+        const formattedPOS = storeOrders.map(o => ({
+            id: `ORD-${o.id}`,
+            internalId: o.id,
+            member: o.member ? o.member.name : (o.guestName || 'Guest'),
+            type: 'POS Sale',
+            method: o.paymentMode || 'POS',
+            amount: Number(o.total),
+            date: o.date,
+            status: o.status,
+            branch: o.tenant?.name || 'Main Branch',
+            flow: 'in'
+        }));
+
+        const allTransactions = [...formattedInvoices, ...formattedPOS].sort((a, b) => new Date(b.date) - new Date(a.date));
 
         // Stats Calculation
         const today = new Date();
         today.setHours(0, 0, 0, 0);
 
-        const todayCollection = invoices
-            .filter(i => i.status === 'Paid' && i.paidDate && new Date(i.paidDate) >= today)
-            .reduce((acc, i) => acc + Number(i.amount), 0);
+        const todayCollection = allTransactions
+            .filter(t => t.status === 'Paid' && new Date(t.date) >= today)
+            .reduce((acc, t) => acc + t.amount, 0);
 
-        const filteredTotal = invoices.reduce((acc, i) => acc + Number(i.amount), 0);
-        const completed = invoices.filter(i => i.status === 'Paid').reduce((acc, i) => acc + Number(i.amount), 0);
-        const pending = invoices.filter(i => i.status !== 'Paid').reduce((acc, i) => acc + Number(i.amount), 0);
+        const filteredTotal = allTransactions.reduce((acc, t) => acc + t.amount, 0);
+        const completed = allTransactions.filter(t => t.status === 'Paid').reduce((acc, t) => acc + t.amount, 0);
+        const pending = allTransactions.filter(t => t.status !== 'Paid').reduce((acc, t) => acc + t.amount, 0);
 
-        res.status(200).json({
-            transactions: formatted,
-            stats: {
-                todayCollection,
-                filteredTotal,
-                completed,
-                pending
-            }
+        res.json({
+            transactions: allTransactions,
+            stats: { todayCollection, filteredTotal, completed, pending }
         });
     } catch (error) {
         console.error('Error fetching transactions:', error);
@@ -641,5 +759,6 @@ module.exports = {
     deleteInvoice,
     getExpenseCategories,
     createExpenseCategory,
-    deleteExpenseCategory
+    deleteExpenseCategory,
+    settleInvoice
 };

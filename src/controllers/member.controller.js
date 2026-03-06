@@ -132,8 +132,88 @@ const getMyBookings = async (req, res) => {
 const createBooking = async (req, res) => {
     try {
         const { classId, date } = req.body;
-        const member = await prisma.member.findUnique({ where: { userId: req.user.id } });
+        const member = await prisma.member.findUnique({
+            where: { userId: req.user.id },
+            include: { plan: true }
+        });
         if (!member) return res.status(404).json({ message: 'Member profile not found' });
+
+        const targetClass = await prisma.class.findUnique({
+            where: { id: parseInt(classId) },
+            include: { _count: { select: { bookings: { where: { status: 'Upcoming' } } } } }
+        });
+        if (!targetClass) return res.status(404).json({ message: 'Class not found' });
+
+        // 1. Capacity Check
+        if (targetClass._count.bookings >= targetClass.maxCapacity) {
+            return res.status(400).json({ message: 'This session is fully booked' });
+        }
+
+        // 2. Gender & Benefit Rule Enforcement
+        if (targetClass.requiredBenefit) {
+            // Find the active amenity for this benefit
+            const amenity = await prisma.amenity.findFirst({
+                where: {
+                    tenantId: member.tenantId,
+                    name: targetClass.requiredBenefit,
+                    status: 'Active'
+                }
+            });
+
+            if (amenity) {
+                // Gender Check
+                if (amenity.gender !== 'UNISEX') {
+                    if (!member.gender) {
+                        return res.status(400).json({
+                            message: `Access Denied: This session is for ${amenity.gender} only. Please update your gender in your profile first.`
+                        });
+                    }
+                    if (member.gender.toUpperCase() !== amenity.gender.toUpperCase()) {
+                        return res.status(400).json({
+                            message: `Access Denied: This ${amenity.name} is for ${amenity.gender} only. Your profile gender is ${member.gender}.`
+                        });
+                    }
+                }
+
+                // Plan & Credit Check
+                let benefits = [];
+                if (member.plan?.benefits) {
+                    try {
+                        benefits = typeof member.plan.benefits === 'string'
+                            ? JSON.parse(member.plan.benefits)
+                            : member.plan.benefits;
+                    } catch (e) { benefits = []; }
+                }
+
+                // Check if this specific amenity ID or name is in the plan benefits
+                const planBenefit = Array.isArray(benefits) && benefits.find(b =>
+                    String(b.id) === String(amenity.id) || b.name === amenity.name
+                );
+
+                if (!planBenefit) {
+                    return res.status(400).json({ message: `Your current plan does not include ${amenity.name} access.` });
+                }
+
+                // Credit Check
+                if (planBenefit.limit !== 'Unlimited') {
+                    const limit = parseInt(planBenefit.limit) || 0;
+
+                    // Count bookings for this benefit since member join date (or start of cycle)
+                    const usedCount = await prisma.booking.count({
+                        where: {
+                            memberId: member.id,
+                            class: { requiredBenefit: targetClass.requiredBenefit },
+                            status: { in: ['Upcoming', 'Completed'] },
+                            date: { gte: member.joinDate }
+                        }
+                    });
+
+                    if (usedCount >= limit) {
+                        return res.status(400).json({ message: `Credit Limit Reached: You have used all ${limit} sessions for ${amenity.name} in your current plan.` });
+                    }
+                }
+            }
+        }
 
         const booking = await prisma.booking.create({
             data: {
@@ -432,6 +512,8 @@ const getServiceRequests = async (req, res) => {
 const getAvailableClasses = async (req, res) => {
     try {
         const tenantId = req.user.tenantId;
+        const member = await prisma.member.findUnique({ where: { userId: req.user.id } });
+
         const classes = await prisma.class.findMany({
             where: { tenantId, status: 'Scheduled' },
             include: {
@@ -442,26 +524,41 @@ const getAvailableClasses = async (req, res) => {
             }
         });
 
-        const processedClasses = classes.map(c => {
-            let startTime = null;
-            let endTime = null;
-            if (c.schedule) {
-                try {
-                    const sched = JSON.parse(c.schedule);
-                    startTime = sched.time || null;
-                    if (startTime && startTime.includes('-')) {
-                        const parts = startTime.split('-');
-                        startTime = parts[0].trim();
-                        endTime = parts[1].trim();
-                    }
-                } catch (e) { }
-            }
-            return {
-                ...c,
-                startTime: startTime || c.startTime,
-                endTime: endTime || c.endTime
-            };
+        const amenities = await prisma.amenity.findMany({
+            where: { tenantId, status: 'Active' }
         });
+
+        const processedClasses = classes
+            .filter(c => {
+                // Filter by gender if requiredBenefit matches a gendered amenity
+                if (c.requiredBenefit && member && member.gender) {
+                    const amenity = amenities.find(a => a.name === c.requiredBenefit);
+                    if (amenity && amenity.gender !== 'UNISEX') {
+                        return amenity.gender.toUpperCase() === member.gender.toUpperCase();
+                    }
+                }
+                return true;
+            })
+            .map(c => {
+                let startTime = null;
+                let endTime = null;
+                if (c.schedule) {
+                    try {
+                        const sched = JSON.parse(c.schedule);
+                        startTime = sched.time || null;
+                        if (startTime && startTime.includes('-')) {
+                            const parts = startTime.split('-');
+                            startTime = parts[0].trim();
+                            endTime = parts[1].trim();
+                        }
+                    } catch (e) { }
+                }
+                return {
+                    ...c,
+                    startTime: startTime || c.startTime,
+                    endTime: endTime || c.endTime
+                };
+            });
 
         res.json(processedClasses);
     } catch (error) {
@@ -516,7 +613,15 @@ const getMemberProfile = async (req, res) => {
             return res.status(404).json({ message: 'Member profile not found' });
         }
 
-        const benefits = member.plan?.benefits || [];
+        let benefits = [];
+        if (member.plan?.benefits) {
+            try {
+                benefits = typeof member.plan.benefits === 'string'
+                    ? JSON.parse(member.plan.benefits)
+                    : member.plan.benefits;
+            } catch (e) { benefits = []; }
+        }
+
         const benefitWallet = {
             classCredits: 10,
             saunaSessions: 0,
@@ -524,11 +629,20 @@ const getMemberProfile = async (req, res) => {
         };
 
         if (Array.isArray(benefits)) {
+            // We need to fetch actual amenity names if only IDs are stored
+            const amenityIds = benefits.filter(b => b.id).map(b => parseInt(b.id)).filter(id => !isNaN(id));
+            const amenitiesFound = await prisma.amenity.findMany({
+                where: { id: { in: amenityIds } }
+            });
+
             benefits.forEach(b => {
-                const name = (b.name || '').toLowerCase();
-                if (name.includes('sauna')) benefitWallet.saunaSessions = b.limit || 0;
-                if (name.includes('ice bath')) benefitWallet.iceBathCredits = b.limit || 0;
-                if (name.includes('pt') || name.includes('class')) benefitWallet.classCredits = b.limit || 10;
+                const amenity = amenitiesFound.find(a => String(a.id) === String(b.id));
+                const name = (amenity?.name || b.name || '').toLowerCase();
+                const limit = b.limit === 'Unlimited' ? 999 : (parseInt(b.limit) || 0);
+
+                if (name.includes('sauna')) benefitWallet.saunaSessions = limit;
+                else if (name.includes('ice bath')) benefitWallet.iceBathCredits = limit;
+                else if (name.includes('pt') || name.includes('class')) benefitWallet.classCredits = limit;
             });
         }
 
@@ -537,9 +651,11 @@ const getMemberProfile = async (req, res) => {
             if (new Date(b.date) < new Date(member.joinDate)) return; // Only count bookings in current cycle
 
             const className = (b.class?.name || '').toLowerCase();
-            if (className.includes('sauna')) {
+            const classReqBenefit = (b.class?.requiredBenefit || '').toLowerCase();
+
+            if (className.includes('sauna') || classReqBenefit.includes('sauna')) {
                 benefitWallet.saunaSessions = Math.max(0, benefitWallet.saunaSessions - 1);
-            } else if (className.includes('ice bath')) {
+            } else if (className.includes('ice bath') || classReqBenefit.includes('ice bath')) {
                 benefitWallet.iceBathCredits = Math.max(0, benefitWallet.iceBathCredits - 1);
             } else {
                 benefitWallet.classCredits = Math.max(0, benefitWallet.classCredits - 1);
@@ -558,6 +674,7 @@ const getMemberProfile = async (req, res) => {
             status: member.status,
             emergencyName: member.emergencyName,
             emergencyPhone: member.emergencyPhone,
+            gender: member.gender,
             plan: member.plan,
             branch: member.tenant?.branchName || member.tenant?.name || 'Main Branch',
             benefitWallet
@@ -569,7 +686,7 @@ const getMemberProfile = async (req, res) => {
 
 const updateMemberProfile = async (req, res) => {
     try {
-        const { phone, emergencyName, emergencyPhone, avatar } = req.body;
+        const { phone, emergencyName, emergencyPhone, avatar, gender } = req.body;
         const member = await prisma.member.findUnique({
             where: { userId: req.user.id }
         });
@@ -591,7 +708,8 @@ const updateMemberProfile = async (req, res) => {
                 phone: phone !== undefined ? phone : member.phone,
                 emergencyName: emergencyName !== undefined ? emergencyName : member.emergencyName,
                 emergencyPhone: emergencyPhone !== undefined ? emergencyPhone : member.emergencyPhone,
-                avatar: avatarUrl !== undefined ? avatarUrl : member.avatar
+                avatar: avatarUrl !== undefined ? avatarUrl : member.avatar,
+                gender: gender !== undefined ? gender : member.gender
             }
         });
 

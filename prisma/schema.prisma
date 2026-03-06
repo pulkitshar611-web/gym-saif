@@ -90,9 +90,25 @@ model User {
 
   sentMessages     ChatMessage[] @relation("SentMessages")
   receivedMessages ChatMessage[] @relation("ReceivedMessages")
+  notifications    Notification[] @relation("UserNotifications")
 
   @@index([tenantId], map: "user_tenantId_fkey")
   @@map("user")
+}
+
+model Notification {
+  id        Int      @id @default(autoincrement())
+  userId    Int
+  title     String
+  message   String   @db.Text
+  type      String   @default("info") // info, success, warning, danger
+  read      Boolean  @default(false)
+  link      String?  // Optional path to redirect to
+  createdAt DateTime @default(now())
+  user      User     @relation("UserNotifications", fields: [userId], references: [id])
+
+  @@index([userId], map: "notification_userId_fkey")
+  @@map("notification")
 }
 
 model SaaSPlan {
@@ -390,6 +406,8 @@ model Locker {
   area         String?
   notes        String?  @db.Text
   isChargeable Boolean  @default(false)
+  price        Decimal  @default(0.00) @db.Decimal(10, 2)
+  isPaid       Boolean  @default(false)
   assignedToId Int?
   assignedTo   Member?  @relation(fields: [assignedToId], references: [id])
   tenant       Tenant?  @relation(fields: [tenantId], references: [id])
@@ -677,6 +695,10 @@ model TenantSettings {
   sessionTimeout  Boolean @default(true)
   sessionDuration String  @default("8")
   loginAlerts     Boolean @default(true)
+  
+  // Google Reviews
+  googleBusinessEnabled Boolean @default(false)
+  googleReviewLink      String? @db.Text
 
   @@map("tenantsettings")
 }
@@ -699,8 +721,9 @@ model Feedback {
   memberId Int?
   rating   Int
   comment  String   @db.Text
-  status   String   @default("Pending")
-  date     DateTime @default(now())
+  status              String   @default("Pending")
+  isPublishedToGoogle Boolean  @default(false)
+  date                DateTime @default(now())
 
   @@map("feedback")
 }
@@ -813,19 +836,21 @@ model StoreProduct {
 }
 
 model StoreOrder {
-  id         Int              @id @default(autoincrement())
-  tenantId   Int?
-  memberId   Int?
-  total      Decimal          @db.Decimal(10, 2)
-  itemsCount Int              @default(0)
-  status     String           @default("Processing")
-  date       DateTime         @default(now())
-  guestName  String?
-  guestPhone String?
-  guestEmail String?
-  items      StoreOrderItem[]
-  member     Member?          @relation(fields: [memberId], references: [id])
-  tenant     Tenant?          @relation(fields: [tenantId], references: [id])
+  id              Int              @id @default(autoincrement())
+  tenantId        Int?
+  memberId        Int?
+  total           Decimal          @db.Decimal(10, 2)
+  itemsCount      Int              @default(0)
+  status          String           @default("Processing")
+  paymentMode     String?          @default("Cash")
+  referenceNumber String?
+  date            DateTime         @default(now())
+  guestName       String?
+  guestPhone      String?
+  guestEmail      String?
+  items           StoreOrderItem[]
+  member          Member?          @relation(fields: [memberId], references: [id])
+  tenant          Tenant?          @relation(fields: [tenantId], references: [id])
 
   @@index([tenantId], map: "storeorder_tenantId_fkey")
   @@index([memberId], map: "storeorder_memberId_fkey")

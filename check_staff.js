@@ -3,11 +3,13 @@ const prisma = new PrismaClient();
 
 async function main() {
     const users = await prisma.user.findMany({
+        where: {
+            role: { in: ['STAFF', 'TRAINER', 'MANAGER', 'BRANCH_ADMIN'] }
+        },
         select: {
             id: true,
             name: true,
             email: true,
-            role: true,
             baseSalary: true,
             config: true
         }

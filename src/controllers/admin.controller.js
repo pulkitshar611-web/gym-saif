@@ -233,6 +233,28 @@ const addMember = async (req, res) => {
                     });
                 }
             }
+
+            // --- NOTIFICATION ---
+            // Notify branch admins/managers about the new member
+            const staffToNotify = await prisma.user.findMany({
+                where: {
+                    tenantId: tId,
+                    role: { in: ['BRANCH_ADMIN', 'MANAGER'] }
+                },
+                select: { id: true }
+            });
+
+            if (staffToNotify.length > 0) {
+                await prisma.notification.createMany({
+                    data: staffToNotify.map(s => ({
+                        userId: s.id,
+                        title: 'New Member Signed Up',
+                        message: `${name} has joined the gym. Membership: ${planId || 'None'}`,
+                        type: 'success',
+                        link: `/members`
+                    }))
+                });
+            }
             createdMembers.push(newMember);
         }
 
@@ -489,7 +511,7 @@ const linkStaff = async (req, res) => {
                 tenantId: parseInt(branchId),
                 department,
                 joinedDate: joiningDate ? new Date(joiningDate) : new Date(),
-                baseSalary: baseSalary ? parseFloat(baseSalary) : null,
+                baseSalary: (baseSalary !== undefined && baseSalary !== null && baseSalary !== '') ? parseFloat(baseSalary) : null,
                 accountNumber,
                 ifsc,
                 config: JSON.stringify({
@@ -570,7 +592,7 @@ const createStaff = async (req, res) => {
                             status: status || 'Active',
                             department,
                             joinedDate: joiningDate ? new Date(joiningDate) : new Date(),
-                            baseSalary: baseSalary ? parseFloat(baseSalary) : null,
+                            baseSalary: (baseSalary !== undefined && baseSalary !== null && baseSalary !== '') ? parseFloat(baseSalary) : null,
                             accountNumber,
                             ifsc,
                             config: JSON.stringify({
@@ -610,7 +632,7 @@ const createStaff = async (req, res) => {
                 status: status || 'Active',
                 department,
                 joinedDate: joiningDate ? new Date(joiningDate) : new Date(),
-                baseSalary: baseSalary ? parseFloat(baseSalary) : null,
+                baseSalary: (baseSalary !== undefined && baseSalary !== null && baseSalary !== '') ? parseFloat(baseSalary) : null,
                 accountNumber,
                 ifsc,
                 config: JSON.stringify({
@@ -2048,33 +2070,124 @@ const createAnnouncement = async (req, res) => {
 
 const getChats = async (req, res) => {
     try {
-        const chats = [
-            { id: 1, name: 'Rahul Sharma', lastMsg: 'I will be there at 6 AM tomorrow.', time: '10:30 AM', unread: 2, status: 'online', avatar: 'R' },
-            { id: 2, name: 'Vikram Singh', lastMsg: 'Can you freeze my membership?', time: '09:15 AM', unread: 0, status: 'away', avatar: 'V' }
-        ];
-        res.json(chats);
+        const userId = req.user.id;
+        const tenantId = req.user.tenantId || 1;
+
+        // Get all users the current user has chatted with
+        const messages = await prisma.chatMessage.findMany({
+            where: {
+                OR: [
+                    { senderId: userId },
+                    { receiverId: userId }
+                ],
+                tenantId
+            },
+            orderBy: { createdAt: 'desc' }
+        });
+
+        // Group by user and get last message
+        const chatMap = new Map();
+        for (const msg of messages) {
+            const otherId = msg.senderId === userId ? msg.receiverId : msg.senderId;
+            if (!chatMap.has(otherId)) {
+                chatMap.set(otherId, msg);
+            }
+        }
+
+        const otherUserIds = Array.from(chatMap.keys());
+        const otherUsers = await prisma.user.findMany({
+            where: { id: { in: otherUserIds } },
+            select: { id: true, name: true, avatar: true, status: true }
+        });
+
+        const formattedChats = otherUsers.map(u => {
+            const lastMsg = chatMap.get(u.id);
+            return {
+                id: u.id,
+                name: u.name,
+                lastMsg: lastMsg.message,
+                time: new Date(lastMsg.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+                unread: messages.filter(m => m.receiverId === userId && m.senderId === u.id && !m.isRead).length,
+                status: u.status.toLowerCase(),
+                avatar: u.avatar || u.name.charAt(0)
+            };
+        });
+
+        res.json(formattedChats);
     } catch (error) {
+        console.error('getChats error:', error);
         res.status(500).json({ message: error.message });
     }
 };
 
 const getMessages = async (req, res) => {
     try {
-        const messages = [
-            { id: 1, text: 'Hi, just a reminder about your session tomorrow.', time: '09:00 AM', sender: 'me', status: 'read' },
-            { id: 2, text: 'I will be there at 6 AM tomorrow. Is that okay?', time: '10:30 AM', sender: 'them', status: 'received' },
-            { id: 3, text: 'Perfect. See you at the gym!', time: '10:35 AM', sender: 'me', status: 'sent' }
-        ];
-        res.json(messages);
+        const { id: otherUserId } = req.params;
+        const userId = req.user.id;
+
+        const messages = await prisma.chatMessage.findMany({
+            where: {
+                OR: [
+                    { senderId: userId, receiverId: parseInt(otherUserId) },
+                    { senderId: parseInt(otherUserId), receiverId: userId }
+                ]
+            },
+            orderBy: { createdAt: 'asc' }
+        });
+
+        // Mark as read
+        await prisma.chatMessage.updateMany({
+            where: { senderId: parseInt(otherUserId), receiverId: userId, isRead: false },
+            data: { isRead: true }
+        });
+
+        const formatted = messages.map(m => ({
+            id: m.id,
+            text: m.message,
+            time: new Date(m.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+            sender: m.senderId === userId ? 'me' : 'them',
+            status: m.isRead ? 'read' : 'sent'
+        }));
+
+        res.json(formatted);
     } catch (error) {
+        console.error('getMessages error:', error);
         res.status(500).json({ message: error.message });
     }
 };
 
 const sendMessage = async (req, res) => {
     try {
-        res.json({ success: true, message: 'Message sent' });
+        const { id: receiverId } = req.params;
+        const { text } = req.body;
+        const senderId = req.user.id;
+        const tenantId = req.user.tenantId || 1;
+
+        if (!text) return res.status(400).json({ message: 'Message text is required' });
+
+        const message = await prisma.chatMessage.create({
+            data: {
+                tenantId,
+                senderId,
+                receiverId: parseInt(receiverId),
+                message: text
+            }
+        });
+
+        // Create a notification for the receiver
+        await prisma.notification.create({
+            data: {
+                userId: parseInt(receiverId),
+                title: `New message from ${req.user.name}`,
+                message: text.length > 50 ? text.substring(0, 47) + '...' : text,
+                type: 'info',
+                link: '/operations/messages'
+            }
+        });
+
+        res.json({ success: true, message: 'Message sent', data: message });
     } catch (error) {
+        console.error('sendMessage error:', error);
         res.status(500).json({ message: error.message });
     }
 };
@@ -2456,6 +2569,27 @@ const renewMembership = async (req, res) => {
                 dueDate: new Date()
             }
         });
+
+        // --- NOTIFICATION ---
+        const staffToNotify = await prisma.user.findMany({
+            where: {
+                tenantId,
+                role: { in: ['BRANCH_ADMIN', 'MANAGER'] }
+            },
+            select: { id: true }
+        });
+
+        if (staffToNotify.length > 0) {
+            await prisma.notification.createMany({
+                data: staffToNotify.map(s => ({
+                    userId: s.id,
+                    title: 'Membership Renewed',
+                    message: `A member has renewed their ${plan.name} plan for ${duration} months.`,
+                    type: 'success',
+                    link: `/members`
+                }))
+            });
+        }
 
         res.json({ message: 'Membership renewed successfully', member: updatedMember });
     } catch (error) {

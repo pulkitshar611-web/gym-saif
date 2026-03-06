@@ -12,7 +12,8 @@ const {
     deleteInvoice,
     getExpenseCategories,
     createExpenseCategory,
-    deleteExpenseCategory
+    deleteExpenseCategory,
+    settleInvoice
 } = require('../controllers/finance.controller');
 const { protect, authorize } = require('../middleware/auth.middleware');
 
@@ -34,6 +35,7 @@ router.get('/invoices', getInvoices);
 router.get('/invoices/:id', getInvoiceById);
 router.post('/invoices', createInvoice);
 router.delete('/invoices/:id', deleteInvoice);
+router.patch('/invoices/:id/settle', settleInvoice);
 router.post('/cashier', receivePayment);
 router.get('/transactions', getTransactions);
 

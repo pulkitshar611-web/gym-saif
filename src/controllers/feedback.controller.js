@@ -44,10 +44,20 @@ exports.getAllFeedback = async (req, res) => {
             rating: f.rating,
             comment: f.comment,
             status: f.status,
+            isPublishedToGoogle: f.isPublishedToGoogle,
             date: new Date(f.date).toLocaleDateString()
         }));
 
-        res.json(formatted);
+        // Get tenant settings to check for Google review link
+        const settings = await prisma.tenantSettings.findUnique({
+            where: { tenantId: role === 'SUPER_ADMIN' ? 1 : tenantId }
+        });
+
+        res.json({
+            feedback: formatted,
+            googleReviewLink: settings?.googleReviewLink || null,
+            googleBusinessEnabled: settings?.googleBusinessEnabled || false
+        });
     } catch (error) {
         res.status(500).json({ message: error.message });
     }
@@ -104,6 +114,27 @@ exports.updateFeedbackStatus = async (req, res) => {
         });
 
         res.json({ message: 'Feedback status updated' });
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+
+exports.publishToGoogle = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { tenantId, role } = req.user;
+
+        const where = { id: parseInt(id) };
+        if (role !== 'SUPER_ADMIN') {
+            where.tenantId = tenantId;
+        }
+
+        await prisma.feedback.updateMany({
+            where,
+            data: { isPublishedToGoogle: true, status: 'Resolved' }
+        });
+
+        res.json({ message: 'Feedback marked as published to Google' });
     } catch (error) {
         res.status(500).json({ message: error.message });
     }

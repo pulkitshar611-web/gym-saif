@@ -111,16 +111,17 @@ const getMembers = async (req, res) => {
 
         // Priority: Query (tenantId or branchId) -> Header -> User's own tenant
         const rawTargetId = qTenantId || qBranchId || headerTenantId;
+        const parsedTargetId = rawTargetId ? parseInt(rawTargetId) : NaN;
 
         let where = {};
         if (role === 'SUPER_ADMIN') {
-            if (rawTargetId && rawTargetId !== 'all' && rawTargetId !== 'undefined') {
-                where.tenantId = parseInt(rawTargetId);
+            if (!isNaN(parsedTargetId)) {
+                where.tenantId = parsedTargetId;
             }
         } else if (role === 'BRANCH_ADMIN' || role === 'MANAGER') {
             // Allow branch switch for these roles
-            if (rawTargetId && rawTargetId !== 'all' && rawTargetId !== 'undefined') {
-                where.tenantId = parseInt(rawTargetId);
+            if (!isNaN(parsedTargetId)) {
+                where.tenantId = parsedTargetId;
             } else {
                 where.tenantId = userTenantId || 1;
             }
@@ -615,9 +616,33 @@ const updateTaskStatus = async (req, res) => {
 
 const getLockers = async (req, res) => {
     try {
+        const { tenantId: userTenantId, role } = req.user;
+        const { branchId: qBranchId, tenantId: qTenantId } = req.query;
+        const headerTenantId = req.headers['x-tenant-id'];
+
+        const rawTargetId = qBranchId || qTenantId || headerTenantId;
+
         const where = {};
-        if (req.user.role !== 'SUPER_ADMIN') {
-            where.tenantId = req.user.tenantId;
+
+        if (role === 'SUPER_ADMIN') {
+            if (rawTargetId && rawTargetId !== 'all' && rawTargetId !== 'undefined' && rawTargetId !== 'null') {
+                where.tenantId = parseInt(rawTargetId);
+            }
+        } else if (role === 'BRANCH_ADMIN' || role === 'MANAGER') {
+            if (rawTargetId && rawTargetId !== 'all' && rawTargetId !== 'undefined' && rawTargetId !== 'null') {
+                where.tenantId = parseInt(rawTargetId);
+            } else {
+                // If 'all', show all branches managed by this user
+                where.tenant = {
+                    OR: [
+                        { id: userTenantId },
+                        { owner: req.user.email },
+                        { owner: req.user.name }
+                    ]
+                };
+            }
+        } else {
+            where.tenantId = userTenantId;
         }
 
         const lockers = await prisma.locker.findMany({
@@ -648,9 +673,9 @@ const assignLocker = async (req, res) => {
         const updated = await prisma.locker.update({
             where: { id: parseInt(id) },
             data: {
-                status: 'Occupied',
+                status: 'Assigned',
                 assignedToId: parseInt(memberId),
-                isChargeable: isPaid || false,
+                isPaid: isPaid ?? false,
                 notes: notes || undefined
             }
         });
@@ -665,7 +690,7 @@ const releaseLocker = async (req, res) => {
         const { id } = req.params;
         const updated = await prisma.locker.update({
             where: { id: parseInt(id) },
-            data: { status: 'Available', assignedToId: null }
+            data: { status: 'Available', assignedToId: null, isPaid: false }
         });
         res.json(updated);
     } catch (error) {
@@ -675,7 +700,48 @@ const releaseLocker = async (req, res) => {
 
 const addLocker = async (req, res) => {
     try {
-        const { number, size, area, notes, isChargeable, status, tenantId } = req.body;
+        const { number, size, area, notes, isChargeable, price, status, tenantId: bodyTenantId } = req.body;
+        const { tenantId: userTenantId, role } = req.user;
+
+        const targetTenantId = bodyTenantId || userTenantId;
+
+        if (targetTenantId === 'all' && (role === 'SUPER_ADMIN' || role === 'BRANCH_ADMIN')) {
+            let tenantWhere = { status: 'Active' };
+            if (role === 'BRANCH_ADMIN') {
+                tenantWhere = {
+                    status: 'Active',
+                    OR: [
+                        { id: userTenantId },
+                        { owner: req.user.email },
+                        { owner: req.user.name }
+                    ]
+                };
+            }
+
+            const tenants = await prisma.tenant.findMany({
+                where: tenantWhere,
+                select: { id: true }
+            });
+
+            const lockers = await Promise.all(
+                tenants.map(tenant =>
+                    prisma.locker.create({
+                        data: {
+                            tenantId: tenant.id,
+                            number,
+                            size: size || 'Medium',
+                            area: area || null,
+                            notes: notes || null,
+                            isChargeable: isChargeable || false,
+                            price: isChargeable ? parseFloat(price || 0) : 0,
+                            status: status || 'Available'
+                        }
+                    })
+                )
+            );
+            return res.status(201).json({ success: true, message: `Locker created in ${lockers.length} branches`, data: lockers[0] });
+        }
+
         const newLocker = await prisma.locker.create({
             data: {
                 number,
@@ -683,22 +749,65 @@ const addLocker = async (req, res) => {
                 area: area || null,
                 notes: notes || null,
                 isChargeable: isChargeable || false,
+                price: isChargeable ? parseFloat(price || 0) : 0,
                 status: status || 'Available',
-                tenantId: req.user.role === 'SUPER_ADMIN' ? (parseInt(tenantId) || null) : req.user.tenantId
+                tenantId: (targetTenantId && targetTenantId !== 'all') ? parseInt(targetTenantId) : (userTenantId || 1)
             }
         });
-        res.json(newLocker);
+        res.json({ success: true, data: newLocker });
     } catch (error) {
-        res.status(500).json({ message: error.message });
+        res.status(500).json({ success: false, message: error.message });
     }
 };
 
 const bulkCreateLockers = async (req, res) => {
     try {
-        const { tenantId, role } = req.user;
-        const { prefix, startNumber, endNumber, size, isChargeable, area } = req.body;
+        const { tenantId: userTenantId, role } = req.user;
+        const { prefix, startNumber, endNumber, size, isChargeable, price, area, tenantId: bodyTenantId } = req.body;
 
-        const currentTenantId = role === 'SUPER_ADMIN' ? (req.body.tenantId ? parseInt(req.body.tenantId) : (tenantId || 1)) : tenantId;
+        const targetTenantId = bodyTenantId || userTenantId;
+
+        if (targetTenantId === 'all' && (role === 'SUPER_ADMIN' || role === 'BRANCH_ADMIN')) {
+            let tenantWhere = { status: 'Active' };
+            if (role === 'BRANCH_ADMIN') {
+                tenantWhere = {
+                    status: 'Active',
+                    OR: [
+                        { id: userTenantId },
+                        { owner: req.user.email },
+                        { owner: req.user.name }
+                    ]
+                };
+            }
+
+            const tenants = await prisma.tenant.findMany({
+                where: tenantWhere,
+                select: { id: true }
+            });
+
+            let totalCreated = 0;
+            for (const tenant of tenants) {
+                const lockersData = [];
+                for (let i = parseInt(startNumber); i <= parseInt(endNumber); i++) {
+                    const num = i.toString().padStart(3, '0');
+                    lockersData.push({
+                        number: `${prefix}${num}`,
+                        size: size || 'Medium',
+                        isChargeable: isChargeable || false,
+                        price: isChargeable ? parseFloat(price || 0) : 0,
+                        area: area || '',
+                        status: 'Available',
+                        tenantId: tenant.id
+                    });
+                }
+                await prisma.locker.createMany({ data: lockersData });
+                totalCreated += lockersData.length;
+            }
+
+            return res.status(201).json({ success: true, message: `${totalCreated} lockers created across ${tenants.length} branches` });
+        }
+
+        const currentTenantId = (targetTenantId && targetTenantId !== 'all') ? parseInt(targetTenantId) : (userTenantId || 1);
 
         const lockersData = [];
         for (let i = parseInt(startNumber); i <= parseInt(endNumber); i++) {
@@ -707,6 +816,7 @@ const bulkCreateLockers = async (req, res) => {
                 number: `${prefix}${num}`,
                 size: size || 'Medium',
                 isChargeable: isChargeable || false,
+                price: isChargeable ? parseFloat(price || 0) : 0,
                 area: area || '',
                 status: 'Available',
                 tenantId: currentTenantId
@@ -717,9 +827,9 @@ const bulkCreateLockers = async (req, res) => {
             data: lockersData
         });
 
-        res.status(201).json({ message: `${lockersData.length} lockers created successfully` });
+        res.status(201).json({ success: true, message: `${lockersData.length} lockers created successfully` });
     } catch (error) {
-        res.status(500).json({ message: error.message });
+        res.status(500).json({ success: false, message: error.message });
     }
 };
 

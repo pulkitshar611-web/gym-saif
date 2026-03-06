@@ -82,6 +82,34 @@ exports.addAnnouncement = async (req, res) => {
             }
         });
 
+        // --- NOTIFICATION ---
+        // Determine who to notify
+        const tId = role === 'SUPER_ADMIN' ? null : parseInt(tenantId);
+        const tRole = (targetRole || targetAudience || 'all').toUpperCase();
+
+        let userWhere = {};
+        if (tId) userWhere.tenantId = tId;
+        if (tRole !== 'ALL' && tRole !== 'ACTIVE') {
+            userWhere.role = tRole;
+        }
+
+        const usersToNotify = await prisma.user.findMany({
+            where: userWhere,
+            select: { id: true }
+        });
+
+        if (usersToNotify.length > 0) {
+            await prisma.notification.createMany({
+                data: usersToNotify.map(u => ({
+                    userId: u.id,
+                    title: `Announcement: ${title}`,
+                    message: (message || content || '').substring(0, 100),
+                    type: priority === 'high' ? 'warning' : 'info',
+                    link: '/dashboard'
+                }))
+            });
+        }
+
         res.status(201).json(newAnnouncement);
     } catch (error) {
         res.status(500).json({ message: error.message });

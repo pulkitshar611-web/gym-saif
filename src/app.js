@@ -67,13 +67,18 @@ const storeRoutes = require('./routes/store.routes');
 const amenityRoutes = require('./routes/amenity.routes');
 const ptRoutes = require('./routes/pt.routes');
 
+const branchesRoutes = require('./routes/branches.routes');
+const announcementRoutes = require('./routes/announcement.routes');
+
 app.use('/api/v1/store', storeRoutes);
 app.use('/api/v1/amenities', amenityRoutes);
 app.use('/api/v1/pt', ptRoutes);
-
-const branchesRoutes = require('./routes/branches.routes');
+app.use('/api/v1/announcements', announcementRoutes);
 
 app.use('/api/v1/branches', branchesRoutes);
+
+const notificationRoutes = require('./routes/notification.routes');
+app.use('/api/v1/notifications', notificationRoutes);
 
 // Base Route
 app.get('/', (req, res) => {

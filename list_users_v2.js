@@ -9,7 +9,7 @@ async function main() {
             email: true,
             role: true,
             baseSalary: true,
-            config: true
+            tenantId: true
         }
     });
     console.log(JSON.stringify(users, null, 2));

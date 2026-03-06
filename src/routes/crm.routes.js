@@ -6,7 +6,8 @@ const {
     updateLead,
     deleteLead,
     getTodayFollowUps,
-    addFollowUp
+    addFollowUp,
+    getLeadById
 } = require('../controllers/crm.controller');
 const { protect, authorize } = require('../middleware/auth.middleware');
 
@@ -18,6 +19,7 @@ router.use(authorize('SUPER_ADMIN', 'BRANCH_ADMIN', 'MANAGER', 'STAFF', 'TRAINER
 
 router.post('/leads', createLead);
 router.get('/leads', getLeads);
+router.get('/leads/:id', getLeadById);
 router.patch('/leads/:id/status', updateLeadStatus);
 router.patch('/leads/:id', updateLead);
 router.delete('/leads/:id', deleteLead);

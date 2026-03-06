@@ -975,7 +975,11 @@ const getStaffMembers = async (req, res) => {
 
 const addStaffMember = async (req, res) => {
     try {
-        const { role = 'STAFF', branch, ...restUserData } = req.body;
+        const {
+            role = 'STAFF', branch,
+            joiningDate, baseSalary, commission,
+            ...restUserData
+        } = req.body;
         let tenantId = req.user.tenantId;
 
         if (req.user.role === 'SUPER_ADMIN' && branch) {
@@ -999,8 +1003,19 @@ const addStaffMember = async (req, res) => {
                 password: hashedPassword,
                 role,
                 tenantId: tenantId || null,
-                baseSalary: safeUserData.baseSalary ? parseFloat(safeUserData.baseSalary) : null,
-                commission: safeUserData.commission ? parseFloat(safeUserData.commission) : 0
+                joinedDate: joiningDate ? new Date(joiningDate) : new Date(),
+                baseSalary: (baseSalary !== undefined && baseSalary !== null && baseSalary !== '') ? parseFloat(baseSalary) : null,
+                config: JSON.stringify({
+                    commission: (commission !== undefined && commission !== null && commission !== '') ? parseFloat(commission) : 0,
+                    idType: safeUserData.idType,
+                    idNumber: safeUserData.idNumber,
+                    specialization: safeUserData.specialization,
+                    certifications: safeUserData.certifications,
+                    bio: safeUserData.bio,
+                    position: safeUserData.position,
+                    bankName: safeUserData.bankName,
+                    taxId: safeUserData.taxId
+                })
             }
         });
         res.status(201).json(newStaff);
@@ -1022,6 +1037,7 @@ const deleteStaffMember = async (req, res) => {
 
 const updateStaffMember = async (req, res) => {
     try {
+        const { id } = req.params;
         const {
             name, email, phone, department, role,
             joiningDate, status, baseSalary, commission, accountNumber, ifsc,

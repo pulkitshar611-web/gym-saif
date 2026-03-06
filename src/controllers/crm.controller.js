@@ -61,6 +61,30 @@ const createLead = async (req, res) => {
             }
         });
 
+        // --- NOTIFICATION ---
+        const staffToNotify = await prisma.user.findMany({
+            where: {
+                tenantId: targetTenantId,
+                OR: [
+                    { role: { in: ['BRANCH_ADMIN', 'MANAGER'] } },
+                    { id: assignedTo ? parseInt(assignedTo) : undefined }
+                ].filter(c => c.id !== undefined || c.role !== undefined)
+            },
+            select: { id: true }
+        });
+
+        if (staffToNotify.length > 0) {
+            await prisma.notification.createMany({
+                data: staffToNotify.map(s => ({
+                    userId: s.id,
+                    title: 'New Lead Added',
+                    message: `${name} has been added as a lead. Source: ${source || 'Unknown'}`,
+                    type: 'info',
+                    link: '/crm/leads'
+                }))
+            });
+        }
+
         res.status(201).json(lead);
     } catch (error) {
         console.error('Create Lead Error:', error);
@@ -136,6 +160,27 @@ const getLeads = async (req, res) => {
         res.json(leads);
     } catch (error) {
         console.error('Get Leads Error:', error);
+        res.status(500).json({ message: error.message });
+    }
+};
+
+const getLeadById = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const lead = await prisma.lead.findUnique({
+            where: { id: parseInt(id) },
+            include: {
+                assignedTo: { select: { id: true, name: true } },
+                followUps: {
+                    orderBy: { createdAt: 'desc' }
+                }
+            }
+        });
+
+        if (!lead) return res.status(404).json({ message: 'Lead not found' });
+        res.json(lead);
+    } catch (error) {
+        console.error('Get Lead ID Error:', error);
         res.status(500).json({ message: error.message });
     }
 };
@@ -303,6 +348,7 @@ const addFollowUp = async (req, res) => {
             where: { id: parseInt(leadId) },
             data: {
                 nextFollowUp: nextDate ? new Date(nextDate) : null,
+                status: status || undefined,
                 updatedAt: new Date()
             }
         });
@@ -320,5 +366,6 @@ module.exports = {
     updateLead,
     deleteLead,
     getTodayFollowUps,
-    addFollowUp
+    addFollowUp,
+    getLeadById
 };

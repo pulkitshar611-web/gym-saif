@@ -3,6 +3,7 @@ const prisma = new PrismaClient();
 const cloudinary = require('../utils/cloudinary');
 
 exports.getProducts = async (req, res) => {
+    console.log("[getProducts] Request received");
     try {
         const { category, search, allStatus } = req.query;
         const { tenantId: userTenantId, role, email, name: userName } = req.user;
@@ -11,13 +12,15 @@ exports.getProducts = async (req, res) => {
         const branchId = rawBranchId && rawBranchId !== 'all' && rawBranchId !== 'undefined' ? rawBranchId : null;
         let where = {};
 
+        const parsedBranchId = branchId ? parseInt(branchId) : NaN;
+
         if (role === 'SUPER_ADMIN') {
-            if (branchId) {
-                where.tenantId = parseInt(branchId);
+            if (!isNaN(parsedBranchId)) {
+                where.tenantId = parsedBranchId;
             }
         } else {
-            if (branchId) {
-                where.tenantId = parseInt(branchId);
+            if (!isNaN(parsedBranchId)) {
+                where.tenantId = parsedBranchId;
             } else {
                 let orConditions = [{ id: userTenantId }];
                 if (email) orConditions.push({ owner: email });
@@ -54,11 +57,13 @@ exports.getProducts = async (req, res) => {
         console.log(`[getProducts] Found ${products.length} products`);
         res.json(products);
     } catch (error) {
+        console.error("[getProducts] Fatal error:", error);
         res.status(500).json({ message: error.message });
     }
 };
 
 exports.getStoreStats = async (req, res) => {
+    console.log("[getStoreStats] Request received");
     try {
         const { tenantId: userTenantId, role, email, name: userName } = req.user;
         // Read branchId from query OR the x-tenant-id header
@@ -66,17 +71,18 @@ exports.getStoreStats = async (req, res) => {
         const branchId = rawBranchId && rawBranchId !== 'all' && rawBranchId !== 'undefined' ? rawBranchId : null;
 
         let targetTenantIds = [];
+        const parsedBranchId = branchId ? parseInt(branchId) : NaN;
 
         if (role === 'SUPER_ADMIN') {
-            if (branchId) {
-                targetTenantIds = [parseInt(branchId)];
+            if (!isNaN(parsedBranchId)) {
+                targetTenantIds = [parsedBranchId];
             } else {
                 const branches = await prisma.tenant.findMany({ select: { id: true } });
                 targetTenantIds = branches.map(b => b.id);
             }
         } else {
-            if (branchId) {
-                targetTenantIds = [parseInt(branchId)];
+            if (!isNaN(parsedBranchId)) {
+                targetTenantIds = [parsedBranchId];
             } else {
                 let orConditions = [{ id: userTenantId }];
                 if (email) orConditions.push({ owner: email });
@@ -115,7 +121,7 @@ exports.getStoreStats = async (req, res) => {
         // --- Current Period Metrics ---
         const todayOrders = orders.filter(o => new Date(o.createdAt || o.date) >= today);
         const todayPos = todayOrders.reduce((acc, o) => acc + parseFloat(o.total || 0), 0);
-        
+
         const thisMonthOrders = orders.filter(o => new Date(o.createdAt || o.date) >= monthStart);
         const totalRevenue = orders.reduce((acc, o) => acc + parseFloat(o.total || 0), 0);
         const totalSales = orders.length;
@@ -137,7 +143,7 @@ exports.getStoreStats = async (req, res) => {
         const thisMonthProfit = calculateProfit(thisMonthOrders);
 
         // --- Trend Calculations ---
-        
+
         // POS Trend (Today vs Yesterday)
         const yesterdayOrders = orders.filter(o => {
             const d = new Date(o.createdAt || o.date);
@@ -147,9 +153,9 @@ exports.getStoreStats = async (req, res) => {
         let posTrend = { value: "0% vs yesterday", direction: "stable" };
         if (yesterdayPos > 0) {
             const diff = ((todayPos - yesterdayPos) / yesterdayPos) * 100;
-            posTrend = { 
-                value: `${diff >= 0 ? '+' : ''}${Math.round(diff)}% vs yesterday`, 
-                direction: diff > 0 ? 'up' : diff < 0 ? 'down' : 'stable' 
+            posTrend = {
+                value: `${diff >= 0 ? '+' : ''}${Math.round(diff)}% vs yesterday`,
+                direction: diff > 0 ? 'up' : diff < 0 ? 'down' : 'stable'
             };
         } else if (todayPos > 0) {
             posTrend = { value: `+₹${todayPos.toLocaleString()} today`, direction: 'up' };
@@ -160,7 +166,7 @@ exports.getStoreStats = async (req, res) => {
             const d = new Date(o.createdAt || o.date);
             return d >= lastMonthStart && d <= lastMonthEnd;
         });
-        
+
         const lastMonthRevenue = lastMonthOrders.reduce((acc, o) => acc + parseFloat(o.total || 0), 0);
         const lastMonthProfit = calculateProfit(lastMonthOrders);
         const lastMonthSalesCount = lastMonthOrders.length;
@@ -177,7 +183,7 @@ exports.getStoreStats = async (req, res) => {
         };
 
         const revenueTrend = getTrend(totalRevenue - lastMonthRevenue, lastMonthRevenue); // Comparing this month's contribution vs last month is tricky since totalRevenue is cumulative. Let's compare Month-to-Month.
-        
+
         // Better: Compare THIS MONTH vs LAST MONTH
         const thisMonthRevenue = thisMonthOrders.reduce((acc, o) => acc + parseFloat(o.total || 0), 0);
         const thisMonthSalesCount = thisMonthOrders.length;
@@ -213,7 +219,7 @@ exports.getStoreStats = async (req, res) => {
             }))
         });
     } catch (error) {
-        console.error("Store stats error:", error);
+        console.error("[getStoreStats] Fatal error:", error);
         res.status(500).json({ message: error.message });
     }
 };
@@ -367,12 +373,12 @@ exports.deleteProduct = async (req, res) => {
 exports.checkout = async (req, res) => {
     try {
         const { tenantId: reqTenantId, role } = req.user;
-        const { memberId, items, total, guestInfo, tenantId: bodyTenantId } = req.body;
+        const { memberId, items, total, guestInfo, tenantId: bodyTenantId, paymentMode, referenceNumber } = req.body;
 
         const order = await prisma.$transaction(async (tx) => {
             let actualMemberId = null;
             let actualTenantId = reqTenantId || 1;
-            
+
             // Allow Super Admin or Branch Admin/Manager to checkout on behalf of a specific branch
             if (['SUPER_ADMIN', 'BRANCH_ADMIN', 'MANAGER'].includes(role) && bodyTenantId) {
                 actualTenantId = parseInt(bodyTenantId);
@@ -424,6 +430,8 @@ exports.checkout = async (req, res) => {
                     guestEmail: guestInfo?.email,
                     itemsCount,
                     total: finalTotal,
+                    paymentMode: paymentMode || 'Cash',
+                    referenceNumber: referenceNumber || null,
                     status: 'Completed', // POS orders are typically completed instantly
                     items: {
                         create: orderItemsInput
@@ -504,6 +512,53 @@ exports.getOrders = async (req, res) => {
         res.json(formatted);
     } catch (error) {
         console.error("Store orders error:", error);
+        res.status(500).json({ message: error.message });
+    }
+};
+
+exports.getOrderById = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const order = await prisma.storeOrder.findUnique({
+            where: { id: parseInt(id) },
+            include: {
+                member: true,
+                tenant: { select: { name: true } },
+                items: {
+                    include: {
+                        product: true
+                    }
+                }
+            }
+        });
+
+        if (!order) return res.status(404).json({ message: 'Order not found' });
+
+        const formatted = {
+            id: order.id,
+            invoiceNumber: `ORD-${order.id}`,
+            member: order.member,
+            tenant: order.tenant,
+            amount: Number(order.total?.toString() || 0),
+            total: Number(order.total?.toString() || 0),
+            paymentMode: order.paymentMode || 'Cash',
+            status: order.status === 'Completed' || order.status === 'Processing' ? 'Paid' : order.status,
+            paidDate: order.date || order.createdAt,
+            dueDate: order.date || order.createdAt,
+            items: (order.items || []).map(item => {
+                const rate = Number(item.priceAtBuy?.toString() || item.product?.price?.toString() || 0);
+                return {
+                    description: item.product?.name || 'Unknown Product',
+                    quantity: Number(item.quantity || 0),
+                    rate: rate,
+                    amount: rate * Number(item.quantity || 0)
+                };
+            })
+        };
+
+        res.json(formatted);
+    } catch (error) {
+        console.error("Get order by id error:", error);
         res.status(500).json({ message: error.message });
     }
 };

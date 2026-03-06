@@ -1,6 +1,6 @@
 const express = require('express');
 const {
-    getProducts, checkout, getOrders, updateStock, addProduct, updateProduct, deleteProduct,
+    getProducts, checkout, getOrders, getOrderById, updateStock, addProduct, updateProduct, deleteProduct,
     getCoupons, createCoupon, updateCoupon, deleteCoupon, getCouponStats,
     getCategories, createCategory, updateCategory, deleteCategory, getStoreStats
 } = require('../controllers/store.controller');
@@ -23,6 +23,7 @@ router.delete('/products/:id', adminStaffOnly, deleteProduct);
 
 // Orders
 router.get('/orders', getOrders);
+router.get('/orders/:id', getOrderById);
 router.post('/checkout', checkout);
 
 // Coupons
