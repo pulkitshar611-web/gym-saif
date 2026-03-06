@@ -10,6 +10,6 @@ const router = express.Router();
 router.use(protect);
 
 router.get('/', authorize('SUPER_ADMIN', 'BRANCH_ADMIN', 'MANAGER', 'STAFF', 'TRAINER', 'MEMBER'), getAllAnnouncements);
-router.post('/', authorize('SUPER_ADMIN', 'BRANCH_ADMIN', 'MANAGER', 'STAFF'), addAnnouncement);
+router.post('/', authorize('SUPER_ADMIN', 'BRANCH_ADMIN', 'MANAGER', 'STAFF', 'TRAINER'), addAnnouncement);
 
 module.exports = router;

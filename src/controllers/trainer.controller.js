@@ -12,6 +12,27 @@ const getProfile = async (req, res) => {
             return res.status(404).json({ message: 'User not found' });
         }
 
+        // Parse config for notification settings
+        let notificationSettings = {
+            sessionReminders: true,
+            messageAlerts: true,
+            clientAssignment: true,
+            classUpdates: true,
+            loginAlerts: false,
+            biometricBridge: false
+        };
+
+        if (user.config) {
+            try {
+                const config = JSON.parse(user.config);
+                if (config.notifications) {
+                    notificationSettings = { ...notificationSettings, ...config.notifications };
+                }
+            } catch (e) {
+                console.error("Config parse error:", e);
+            }
+        }
+
         res.json({
             id: `TRN-${user.id}`,
             name: user.name,
@@ -21,6 +42,7 @@ const getProfile = async (req, res) => {
             role: user.role,
             avatar: user.avatar,
             status: user.status,
+            notificationSettings,
             joinedDate: new Date(user.joinedDate).toLocaleDateString('en-US', {
                 month: 'short',
                 day: 'numeric',
@@ -93,6 +115,43 @@ const changePassword = async (req, res) => {
         });
 
         res.json({ message: 'Password changed successfully' });
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+
+const updateNotificationSettings = async (req, res) => {
+    try {
+        const { notifications } = req.body;
+        const user = await prisma.user.findUnique({
+            where: { id: req.user.id }
+        });
+
+        let currentConfig = {};
+        if (user.config) {
+            try {
+                currentConfig = JSON.parse(user.config);
+            } catch (e) {
+                console.error("Config parse error:", e);
+            }
+        }
+
+        const updatedConfig = {
+            ...currentConfig,
+            notifications: {
+                ...(currentConfig.notifications || {}),
+                ...notifications
+            }
+        };
+
+        await prisma.user.update({
+            where: { id: req.user.id },
+            data: {
+                config: JSON.stringify(updatedConfig)
+            }
+        });
+
+        res.json({ message: 'Notification settings updated successfully', notifications: updatedConfig.notifications });
     } catch (error) {
         res.status(500).json({ message: error.message });
     }
@@ -435,63 +494,110 @@ const getMemberPayments = async (req, res) => {
 
 const getEarnings = async (req, res) => {
     try {
-        const { id, joinedDate, baseSalary, name } = req.user;
+        const { id, baseSalary, config, tenantId } = req.user;
         const currentYear = new Date().getFullYear();
         const currentMonth = new Date().getMonth(); // 0-indexed
 
-        // Use trainer's base salary or default
-        const salary = baseSalary ? parseFloat(baseSalary) : 45000;
-        const commissionRate = 15; // Could be from user.config
+        // Parse config
+        let parsedConfig = {};
+        try {
+            if (config) parsedConfig = typeof config === 'string' ? JSON.parse(config) : config;
+        } catch (e) { console.error("Config parse error", e); }
 
-        // Generate history for last 2 years
+        const salary = baseSalary ? parseFloat(baseSalary) : 0;
+        const sessionRate = parsedConfig.hourlyRate || 500; // Use hourlyRate as sessionRate, default 500
+        const commissionFixed = parsedConfig.commission || 0;
+
+        // Generate history for last 6 months (more realistic than 2 years of fake entries)
         const history = [];
-        const months = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+        const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+        const fullMonths = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
 
-        for (let year of [currentYear, currentYear - 1]) {
-            const startMonth = (year === currentYear) ? currentMonth : 11;
-            for (let m = startMonth; m >= 0; m--) {
-                // For demo/simulated data, we create some values
-                const monthName = months[m];
-                const isCurrentMonth = (year === currentYear && m === currentMonth);
-
-                // Deterministic pseudo-random values based on user ID and date
-                const seed = (id * 10000) + (year * 100) + m;
-                const commission = Math.floor((Math.sin(seed) * 5000) + 10000);
-                const bonus = Math.floor(Math.sin(seed + 1) * 2000);
-                const total = salary + commission + (bonus > 0 ? bonus : 0);
-
-                history.push({
-                    id: `${year}-${m}`,
-                    year: year.toString(),
-                    month: `${monthName} ${year}`,
-                    baseSalary: salary,
-                    commission: commission,
-                    bonus: bonus > 0 ? bonus : 0,
-                    total: total,
-                    status: isCurrentMonth ? 'Pending' : 'Paid',
-                    details: [
-                        { id: 101, member: 'Rahul Sharma', type: 'Personal Training', amount: Math.floor(commission * 0.6), date: `${monthName} 12, ${year}` },
-                        { id: 102, member: 'Priya Singh', type: 'Diet Plan', amount: Math.floor(commission * 0.4), date: `${monthName} 15, ${year}` },
-                    ]
-                });
+        // Loop through last 6 months
+        for (let i = 0; i < 6; i++) {
+            let m = currentMonth - i;
+            let year = currentYear;
+            if (m < 0) {
+                m += 12;
+                year -= 1;
             }
+
+            const monthName = months[m];
+            const isCurrentMonth = (year === currentYear && m === currentMonth);
+
+            // Fetch actual completed sessions for this month
+            const startDate = new Date(year, m, 1);
+            const endDate = new Date(year, m + 1, 1);
+
+            const sessionCount = await prisma.pTSession.count({
+                where: {
+                    trainerId: id,
+                    status: 'Completed',
+                    date: {
+                        gte: startDate,
+                        lt: endDate
+                    }
+                }
+            });
+
+            const sessionEarnings = sessionCount * sessionRate;
+
+            // For past months, we check if there's a Payroll record
+            const payroll = await prisma.payroll.findFirst({
+                where: {
+                    staffId: id,
+                    month: m + 1,
+                    year: year
+                }
+            });
+
+            // If payroll exists, use those values, else calculate estimates
+            const finalBase = payroll ? parseFloat(payroll.amount) : salary;
+            const finalCommission = payroll ? 0 : commissionFixed; // Assuming commission is handled or not in payroll record for now
+            const pfDeduction = (finalBase + sessionEarnings + finalCommission) * 0.12; // 12% PF Mock
+            const total = (finalBase + sessionEarnings + finalCommission) - pfDeduction;
+
+            history.push({
+                id: `${year}-${m}`,
+                year: year.toString(),
+                month: `${monthName} ${year}`,
+                baseSalary: finalBase,
+                sessionCount,
+                sessionRate,
+                sessionEarnings,
+                commission: finalCommission,
+                bonus: 0,
+                pfDeduction: Math.round(pfDeduction),
+                total: Math.round(total),
+                status: payroll ? 'Paid' : (isCurrentMonth ? 'Pending' : 'Processed'),
+                details: [] // Could fetch individual sessions if needed, but summary is usually enough for history item
+            });
         }
 
-        const currentMonthData = history.find(h => h.id === `${currentYear}-${currentMonth}`) || history[0];
+        const currentMonthData = history[0];
 
         const earningsData = {
             summary: {
                 baseSalary: salary,
-                commissionRate: commissionRate,
+                sessionRate: sessionRate,
+                sessionCount: currentMonthData.sessionCount,
+                sessionEarnings: currentMonthData.sessionEarnings,
                 currentMonthCommission: currentMonthData.commission,
+                pfDeduction: currentMonthData.pfDeduction,
                 currentMonthTotal: currentMonthData.total,
                 currency: '₹',
-                currentMonthName: months[currentMonth]
+                currentMonthName: fullMonths[currentMonth],
+                trainerName: req.user.name,
+                trainerCode: `TRN-${id}`,
+                branchName: req.user.tenant?.name || 'Main Branch',
+                department: req.user.department || 'Training',
+                position: parsedConfig.position || 'Personal Trainer'
             },
             history: history
         };
         res.json(earningsData);
     } catch (error) {
+        console.error("getEarnings error:", error);
         res.status(500).json({ message: error.message });
     }
 };
@@ -1078,20 +1184,51 @@ const getTrainerDashboardStats = async (req, res) => {
         });
 
         // 7. My Clients (limit 10 for preview)
-        const myClients = await prisma.member.findMany({
+        const recentMembers = await prisma.member.findMany({
             where: whereBase,
             take: 10,
             select: { id: true, name: true, status: true }
         });
 
-        // 8. Upcoming class (next one)
-        const upcomingClass = await prisma.class.findFirst({
+        // Fetch upcoming class (next scheduled based on date/time)
+        const scheduledClasses = await prisma.class.findMany({
             where: {
                 ...whereBase,
                 status: 'Scheduled'
-            },
-            orderBy: { schedule: 'asc' }
+            }
         });
+
+        let upcomingClass = null;
+        if (scheduledClasses.length > 0) {
+            // Sort in JS because schedule is a JSON string
+            const now = new Date();
+            const sorted = scheduledClasses.map(cls => {
+                let parsed = {};
+                try {
+                    parsed = JSON.parse(cls.schedule);
+                } catch (e) {
+                    console.error("Schedule parse error", e);
+                }
+                const classDate = parsed.date ? new Date(`${parsed.date}T${parsed.time || '00:00'}`) : new Date(0);
+                return { ...cls, classDate, parsedSchedule: parsed };
+            }).filter(cls => cls.classDate >= now) // Only future classes
+                .sort((a, b) => a.classDate - b.classDate);
+
+            if (sorted.length > 0) {
+                const uc = sorted[0];
+                upcomingClass = {
+                    ...uc,
+                    schedule: uc.parsedSchedule.date ? `${uc.parsedSchedule.date} at ${uc.parsedSchedule.time}` : uc.schedule
+                };
+            } else {
+                // If no future classes, just take the first scheduled one as fallback
+                upcomingClass = scheduledClasses[0];
+                try {
+                    const p = JSON.parse(upcomingClass.schedule);
+                    upcomingClass.schedule = p.date ? `${p.date} at ${p.time}` : upcomingClass.schedule;
+                } catch (e) { }
+            }
+        }
 
         res.json({
             stats: {
@@ -1104,7 +1241,7 @@ const getTrainerDashboardStats = async (req, res) => {
                 completionRate
             },
             todaySessions,
-            myClients,
+            myClients: recentMembers,
             upcomingClass
         });
     } catch (error) {
@@ -1117,6 +1254,7 @@ module.exports = {
     getProfile,
     updateProfile,
     changePassword,
+    updateNotificationSettings,
     getAssignedMembers,
     getMemberById,
     flagMember,

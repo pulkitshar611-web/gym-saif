@@ -4,6 +4,7 @@ const {
     getProfile,
     updateProfile,
     changePassword,
+    updateNotificationSettings,
     getAssignedMembers,
     getMemberById,
     flagMember,
@@ -45,6 +46,7 @@ router.use(authorize('TRAINER')); // Only Trainers can access these routes
 // Profile
 router.get('/profile', getProfile);
 router.patch('/profile', updateProfile);
+router.patch('/profile/notifications', updateNotificationSettings);
 router.post('/change-password', changePassword);
 
 // Assigned Members

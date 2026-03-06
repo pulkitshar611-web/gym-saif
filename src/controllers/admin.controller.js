@@ -1963,13 +1963,25 @@ const getClassById = async (req, res) => {
             }
         } catch (e) { }
 
+        // If raw fields are still empty, attempt to parse from the schedule string (legacy data)
+        if (!rawDate && typeof cls.schedule === 'string') {
+            const dateMatch = cls.schedule.match(/(\d{4}-\d{2}-\d{2})|(\d{2}-\d{2}-\d{4})/);
+            if (dateMatch) {
+                rawDate = dateMatch[1] || dateMatch[2].split('-').reverse().join('-');
+            }
+            const timeMatch = cls.schedule.match(/(\d{1,2}:\d{2}(?:\s*[AP]M)?)/i);
+            if (timeMatch) rawTime = timeMatch[1];
+        }
+
         const formatted = {
             id: cls.id,
             name: cls.name,
             description: cls.description,
             trainerName: cls.trainer?.name || 'Unassigned',
             trainerId: cls.trainerId,
-            schedule: parsedSchedule,
+            schedule: (parsedSchedule && parsedSchedule.date)
+                ? `${parsedSchedule.date} at ${parsedSchedule.time}`
+                : (typeof parsedSchedule === 'string' ? parsedSchedule : (rawDate ? `${rawDate} ${rawTime}` : 'TBA')),
             rawDate,
             rawTime,
             rawType,
@@ -2201,10 +2213,25 @@ const getProfile = async (req, res) => {
 
 const updateProfile = async (req, res) => {
     try {
-        const { name, email, phone, address } = req.body;
+        const { name, email, phone, address, avatar } = req.body;
+
+        let avatarUrl = avatar;
+        if (avatar && avatar.startsWith('data:image')) {
+            const uploadRes = await cloudinary.uploader.upload(avatar, {
+                folder: 'gym/admin/avatars'
+            });
+            avatarUrl = uploadRes.secure_url;
+        }
+
         const updated = await prisma.user.update({
             where: { id: req.user.id },
-            data: { name, email, phone, address }
+            data: {
+                name,
+                email,
+                phone,
+                address,
+                avatar: avatarUrl
+            }
         });
         res.json(updated);
     } catch (error) {
@@ -2682,7 +2709,90 @@ const runReminders = async (req, res) => {
     }
 };
 
+const getAllServiceRequests = async (req, res) => {
+    try {
+        const { status, type, branchId: queryBranchId } = req.query;
+        const { tenantId: userTenantId, role } = req.user;
+        const headerTenantId = req.headers['x-tenant-id'];
+
+        const effectiveBranchId = queryBranchId || headerTenantId;
+
+        const where = {};
+
+        if (role === 'SUPER_ADMIN') {
+            if (effectiveBranchId && effectiveBranchId !== 'all') {
+                where.tenantId = parseInt(effectiveBranchId);
+            }
+        } else if (role === 'TRAINER') {
+            // Trainers see requests for their assigned members
+            where.member = {
+                trainerId: req.user.id
+            };
+        } else {
+            if (effectiveBranchId && effectiveBranchId !== 'all') {
+                where.tenantId = parseInt(effectiveBranchId);
+            } else {
+                where.tenantId = userTenantId || 1;
+            }
+        }
+
+        if (status && status !== 'All') {
+            where.status = status;
+        }
+
+        if (type && type !== 'All') {
+            where.type = type;
+        }
+
+        const requests = await prisma.serviceRequest.findMany({
+            where,
+            include: {
+                member: {
+                    select: {
+                        id: true,
+                        name: true,
+                        memberId: true,
+                        phone: true,
+                        email: true,
+                        trainerId: true
+                    }
+                },
+                tenant: {
+                    select: { name: true }
+                }
+            },
+            orderBy: { createdAt: 'desc' }
+        });
+
+        res.json(requests);
+    } catch (error) {
+        console.error('getAllServiceRequests error:', error);
+        res.status(500).json({ message: error.message });
+    }
+};
+
+const updateServiceRequestStatus = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { status } = req.body;
+
+        const updated = await prisma.serviceRequest.update({
+            where: { id: parseInt(id) },
+            data: {
+                status,
+                updatedAt: new Date()
+            }
+        });
+
+        res.json(updated);
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+
 module.exports = {
+    getAllServiceRequests,
+    updateServiceRequestStatus,
     getAllMembers,
     addMember,
     getMemberById,

@@ -255,14 +255,14 @@ const getChatContacts = async (req, res) => {
             // Can chat with their assigned trainer
             const memberRecord = await prisma.member.findUnique({
                 where: { userId: currentUserId },
-                select: { trainerId: true }
+                select: { trainerId: true, tenantId: true }
             });
 
             userFilters.OR = [
-                { role: { in: ['BRANCH_ADMIN', 'MANAGER'] } },
+                { role: { in: ['BRANCH_ADMIN', 'MANAGER'] }, tenantId: memberRecord?.tenantId },
                 ...(memberRecord?.trainerId ? [{ id: memberRecord.trainerId }] : [])
             ];
-            memberFilters = null; // Members don't chat with other members usually
+            memberFilters = null;
         }
 
         // Apply search if provided
@@ -348,6 +348,77 @@ const getChatContacts = async (req, res) => {
     }
 };
 
+const sendChatMessage = async (req, res) => {
+    try {
+        const { receiverId, message, receiverType } = req.body;
+        const tenantId = req.user.tenantId || 1;
+        const senderId = req.user.id;
+
+        // If receiverId is provided as a Member ID (common in trainer UI), we need to find their userId
+        let actualReceiverUserId = parseInt(receiverId);
+
+        if (receiverType === 'MEMBER') {
+            const member = await prisma.member.findUnique({
+                where: { id: parseInt(receiverId) },
+                select: { userId: true }
+            });
+            if (member?.userId) {
+                actualReceiverUserId = member.userId;
+            }
+        }
+
+        const chatMessage = await prisma.chatMessage.create({
+            data: {
+                tenantId,
+                senderId,
+                receiverId: actualReceiverUserId,
+                message
+            }
+        });
+
+        res.status(201).json(chatMessage);
+    } catch (error) {
+        console.error('sendChatMessage error:', error);
+        res.status(500).json({ message: error.message });
+    }
+};
+
+const getChatMessages = async (req, res) => {
+    try {
+        const { contactId } = req.params;
+        const { isMemberId } = req.query; // If true, contactId is member.id
+        const currentUserId = req.user.id;
+
+        let targetUserId = parseInt(contactId);
+
+        if (isMemberId === 'true') {
+            const member = await prisma.member.findUnique({
+                where: { id: parseInt(contactId) },
+                select: { userId: true }
+            });
+            if (member?.userId) {
+                targetUserId = member.userId;
+            }
+        }
+
+        const messages = await prisma.chatMessage.findMany({
+            where: {
+                OR: [
+                    { senderId: currentUserId, receiverId: targetUserId },
+                    { senderId: targetUserId, receiverId: currentUserId }
+                ]
+            },
+            orderBy: { createdAt: 'asc' },
+            take: 100
+        });
+
+        res.json(messages);
+    } catch (error) {
+        console.error('getChatMessages error:', error);
+        res.status(500).json({ message: error.message });
+    }
+};
+
 module.exports = {
     getCommStats,
     getAnnouncements,
@@ -357,5 +428,7 @@ module.exports = {
     deleteTemplate,
     sendBroadcast,
     getCommLogs,
-    getChatContacts
+    getChatContacts,
+    sendChatMessage,
+    getChatMessages
 };

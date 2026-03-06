@@ -1,5 +1,7 @@
 // gym_backend/src/controllers/member.controller.js
 const prisma = require('../config/prisma');
+const bcrypt = require('bcryptjs');
+const cloudinary = require('../utils/cloudinary');
 
 const upgradePlan = async (req, res) => {
     try {
@@ -95,7 +97,33 @@ const getMyBookings = async (req, res) => {
             include: { class: { include: { trainer: true } } },
             orderBy: { date: 'desc' }
         });
-        res.json(bookings);
+
+        const processedBookings = bookings.map(b => {
+            let startTime = null;
+            let endTime = null;
+            if (b.class && b.class.schedule) {
+                try {
+                    const sched = JSON.parse(b.class.schedule);
+                    startTime = sched.time || null;
+                    // If range like "09:00 AM - 10:00 AM", split it
+                    if (startTime && startTime.includes('-')) {
+                        const parts = startTime.split('-');
+                        startTime = parts[0].trim();
+                        endTime = parts[1].trim();
+                    }
+                } catch (e) { }
+            }
+            return {
+                ...b,
+                class: {
+                    ...b.class,
+                    startTime: startTime || b.class.startTime,
+                    endTime: endTime || b.class.endTime
+                }
+            };
+        });
+
+        res.json(processedBookings);
     } catch (error) {
         res.status(500).json({ message: error.message });
     }
@@ -413,7 +441,29 @@ const getAvailableClasses = async (req, res) => {
                 }
             }
         });
-        res.json(classes);
+
+        const processedClasses = classes.map(c => {
+            let startTime = null;
+            let endTime = null;
+            if (c.schedule) {
+                try {
+                    const sched = JSON.parse(c.schedule);
+                    startTime = sched.time || null;
+                    if (startTime && startTime.includes('-')) {
+                        const parts = startTime.split('-');
+                        startTime = parts[0].trim();
+                        endTime = parts[1].trim();
+                    }
+                } catch (e) { }
+            }
+            return {
+                ...c,
+                startTime: startTime || c.startTime,
+                endTime: endTime || c.endTime
+            };
+        });
+
+        res.json(processedClasses);
     } catch (error) {
         res.status(500).json({ message: error.message });
     }
@@ -502,13 +552,14 @@ const getMemberProfile = async (req, res) => {
             name: member.name,
             email: member.email,
             phone: member.phone,
+            avatar: member.avatar,
             joinDate: member.joinDate,
             expiryDate: member.expiryDate,
             status: member.status,
             emergencyName: member.emergencyName,
             emergencyPhone: member.emergencyPhone,
             plan: member.plan,
-            branch: member.tenant?.name || 'Main Branch',
+            branch: member.tenant?.branchName || member.tenant?.name || 'Main Branch',
             benefitWallet
         });
     } catch (error) {
@@ -518,21 +569,43 @@ const getMemberProfile = async (req, res) => {
 
 const updateMemberProfile = async (req, res) => {
     try {
-        const { phone, emergencyName, emergencyPhone } = req.body;
+        const { phone, emergencyName, emergencyPhone, avatar } = req.body;
         const member = await prisma.member.findUnique({
             where: { userId: req.user.id }
         });
 
         if (!member) return res.status(404).json({ message: 'Member not found' });
 
+        let avatarUrl = avatar;
+        if (avatar && avatar.startsWith('data:image')) {
+            const uploadRes = await cloudinary.uploader.upload(avatar, {
+                folder: 'gym/members/avatars'
+            });
+            avatarUrl = uploadRes.secure_url;
+        }
+
+        // Update Member Detail
         const updatedMember = await prisma.member.update({
             where: { id: member.id },
             data: {
-                phone: phone || member.phone,
-                emergencyName: emergencyName || member.emergencyName,
-                emergencyPhone: emergencyPhone || member.emergencyPhone
+                phone: phone !== undefined ? phone : member.phone,
+                emergencyName: emergencyName !== undefined ? emergencyName : member.emergencyName,
+                emergencyPhone: emergencyPhone !== undefined ? emergencyPhone : member.emergencyPhone,
+                avatar: avatarUrl !== undefined ? avatarUrl : member.avatar
             }
         });
+
+        // Sync with User record
+        const userData = {};
+        if (phone !== undefined) userData.phone = phone;
+        if (avatarUrl !== undefined) userData.avatar = avatarUrl;
+
+        if (Object.keys(userData).length > 0) {
+            await prisma.user.update({
+                where: { id: req.user.id },
+                data: userData
+            });
+        }
 
         res.json({ message: 'Profile updated successfully', member: updatedMember });
     } catch (error) {
@@ -543,7 +616,6 @@ const updateMemberProfile = async (req, res) => {
 const changePassword = async (req, res) => {
     try {
         const { currentPassword, newPassword } = req.body;
-        const bcrypt = require('bcryptjs');
 
         const user = await prisma.user.findUnique({
             where: { id: req.user.id }
@@ -852,26 +924,29 @@ const getMyReferrals = async (req, res) => {
 
         for (const lead of rawLeads) {
             if (lead.notes) {
-                try {
-                    const notesData = JSON.parse(lead.notes);
-                    if (notesData.referrerId === member.memberId) {
-                        const isConverted = lead.status === 'Converted';
-                        if (isConverted) successfulSignups++;
-                        // Dummy reward calculation logic for now: 100 per conversion
-                        if (isConverted) totalRewardsEarned += 100;
+                // Only attempt to parse if it looks like a JSON object
+                if (lead.notes.trim().startsWith('{')) {
+                    try {
+                        const notesData = JSON.parse(lead.notes);
+                        if (notesData.referrerId === member.memberId) {
+                            const isConverted = lead.status === 'Converted';
+                            if (isConverted) successfulSignups++;
+                            // Dummy reward calculation logic for now: 100 per conversion
+                            if (isConverted) totalRewardsEarned += 100;
 
-                        myReferrals.push({
-                            id: lead.id,
-                            referredName: lead.name,
-                            phone: lead.phone,
-                            email: lead.email,
-                            status: isConverted ? 'Converted' : (lead.status === 'New' ? 'Pending' : lead.status),
-                            rewardStatus: isConverted ? 'Claimed' : 'Pending',
-                            createdAt: lead.createdAt
-                        });
+                            myReferrals.push({
+                                id: lead.id,
+                                referredName: lead.name,
+                                phone: lead.phone,
+                                email: lead.email,
+                                status: isConverted ? 'Converted' : (lead.status === 'New' ? 'Pending' : lead.status),
+                                rewardStatus: isConverted ? 'Claimed' : 'Pending',
+                                createdAt: lead.createdAt
+                            });
+                        }
+                    } catch (e) {
+                        console.error("Error parsing lead notes", e);
                     }
-                } catch (e) {
-                    console.error("Error parsing lead notes", e);
                 }
             }
         }
@@ -932,16 +1007,17 @@ const getMemberDashboard = async (req, res) => {
             }
         });
 
-        // Count remaining PT sessions (Upcoming bookings for PT-type classes)
-        const ptSessionsRemaining = await prisma.booking.count({
+        // Count remaining PT sessions from PTMemberAccount
+        const ptAccountStats = await prisma.pTMemberAccount.aggregate({
             where: {
                 memberId: member.id,
-                status: 'Upcoming',
-                class: {
-                    type: { contains: 'PT' }
-                }
+                status: 'Active'
+            },
+            _sum: {
+                remainingSessions: true
             }
         });
+        const ptSessionsRemaining = ptAccountStats._sum.remainingSessions || 0;
 
         // Calculate pending dues
         const pendingDues = member.invoices.reduce((sum, inv) => sum + parseFloat(inv.amount || 0), 0);
@@ -982,15 +1058,29 @@ const getMemberDashboard = async (req, res) => {
                 status: member.bookings[0].status
             } : null,
             trainer: member.trainer ? {
+                userId: member.trainer.id,
                 name: member.trainer.name,
                 specialization: 'Personal Trainer'
             } : {
+                userId: null,
                 name: 'Not Assigned',
                 specialization: 'Connect with staff'
             },
             locker: member.lockers.length > 0 ? {
                 number: member.lockers[0].number
-            } : null
+            } : null,
+            announcements: await prisma.announcement.findMany({
+                where: {
+                    status: 'Active',
+                    OR: [
+                        { tenantId: member.tenantId },
+                        { tenantId: 0 } // Global
+                    ],
+                    targetRole: { in: ['all', 'member', 'MEMBER'] }
+                },
+                orderBy: { createdAt: 'desc' },
+                take: 3
+            })
         };
 
         res.json(dashboardData);

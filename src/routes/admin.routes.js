@@ -11,6 +11,8 @@ const {
     freezeMember,
     unfreezeMember,
     giftDays,
+    getAllServiceRequests,
+    updateServiceRequestStatus,
     getAllStaff,
     getStaffById,
     createStaff,
@@ -140,6 +142,10 @@ router.get('/requests/trainers', authorize('SUPER_ADMIN', 'BRANCH_ADMIN', 'MANAG
 router.patch('/requests/trainers/:id', authorize('SUPER_ADMIN', 'BRANCH_ADMIN', 'MANAGER'), updateTrainerRequest);
 router.patch('/staff/:id', authorize('SUPER_ADMIN', 'BRANCH_ADMIN', 'MANAGER'), updateStaffMember);
 router.delete('/staff/:id', authorize('SUPER_ADMIN', 'BRANCH_ADMIN', 'MANAGER'), deleteStaffMember);
+
+// Service Requests (Members)
+router.get('/requests/service', getAllServiceRequests);
+router.patch('/requests/service/:id/status', updateServiceRequestStatus);
 
 // Leave Requests (Staff/HR)
 router.get('/leave-requests', authorize('SUPER_ADMIN', 'BRANCH_ADMIN', 'MANAGER'), getLeaveRequests);
