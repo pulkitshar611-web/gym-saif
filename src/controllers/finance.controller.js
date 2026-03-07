@@ -261,11 +261,10 @@ const receivePayment = async (req, res) => {
                 memberId: parseInt(memberId),
                 amount: finalAmount,
                 paymentMode: method || 'Cash',
-                referenceNumber: referenceNumber || null,
                 status: 'Paid',
                 dueDate: new Date(),
                 paidDate: new Date(),
-                notes: notes || null
+                notes: referenceNumber ? `[Ref: ${referenceNumber}] ${notes || ''}`.trim() : (notes || null)
             },
             include: { member: true }
         });
@@ -280,15 +279,51 @@ const receivePayment = async (req, res) => {
     }
 };
 
-// Settle an existing unpaid invoice
+// Settle an existing unpaid invoice (Support both Invoices and POS Orders)
 const settleInvoice = async (req, res) => {
     try {
         const { id } = req.params;
         const { method, referenceNumber, amount, date } = req.body;
         const { tenantId, role } = req.user;
 
+        console.log(`[settleInvoice] ID: ${id}, Method: ${method}`);
+
+        // Handle POS Sales (id starts with pos-)
+        if (id.startsWith('pos-')) {
+            const internalId = parseInt(id.replace('pos-', ''));
+            const order = await prisma.storeOrder.findUnique({
+                where: { id: internalId }
+            });
+
+            if (!order) return res.status(404).json({ message: 'POS Order not found' });
+
+            // Authorization check
+            if (role !== 'SUPER_ADMIN' && order.tenantId !== tenantId) {
+                return res.status(403).json({ message: 'Not authorized to update this order' });
+            }
+
+            const updatedOrder = await prisma.storeOrder.update({
+                where: { id: internalId },
+                data: {
+                    paymentMode: method || 'Cash',
+                    referenceNumber: referenceNumber || null,
+                    status: 'Completed', // Setting status to Completed makes it "Paid" in finance views
+                    date: date ? new Date(date) : new Date()
+                }
+            });
+
+            return res.json({
+                message: 'POS Order settled successfully',
+                invoice: { ...updatedOrder, id: `pos-${updatedOrder.id}` }
+            });
+        }
+
+        // Handle Membership Invoices
+        const invoiceId = parseInt(id);
+        if (isNaN(invoiceId)) return res.status(400).json({ message: 'Invalid Invoice ID' });
+
         const invoice = await prisma.invoice.findUnique({
-            where: { id: parseInt(id) }
+            where: { id: invoiceId }
         });
 
         if (!invoice) return res.status(404).json({ message: 'Invoice not found' });
@@ -298,14 +333,18 @@ const settleInvoice = async (req, res) => {
             return res.status(403).json({ message: 'Not authorized to update this invoice' });
         }
 
+        // Store reference number in notes since Invoice model doesn't have a dedicated referenceNumber field yet
+        const updatedNotes = referenceNumber
+            ? `${invoice.notes || ''}\n[Payment Ref: ${referenceNumber}]`.trim()
+            : invoice.notes;
+
         const updatedInvoice = await prisma.invoice.update({
-            where: { id: parseInt(id) },
+            where: { id: invoiceId },
             data: {
                 paymentMode: method || 'Cash',
-                referenceNumber: referenceNumber || null,
                 status: 'Paid',
                 paidDate: date ? new Date(date) : new Date(),
-                // If partial payment was implemented, we'd handle it here
+                notes: updatedNotes
             }
         });
 

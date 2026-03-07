@@ -11,7 +11,7 @@ const getNotifications = async (req, res) => {
 
         // Also fetch unread chat messages for count
         const unreadChatCount = await prisma.chatMessage.count({
-            where: { receiverId: userId, read: false }
+            where: { receiverId: userId, isRead: false }
         });
 
         res.json({
