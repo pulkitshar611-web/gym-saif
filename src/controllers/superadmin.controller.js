@@ -779,26 +779,99 @@ const getGSTReports = async (req, res) => {
 
 const getDevices = async (req, res) => {
     try {
-        const devices = await prisma.device.findMany();
+        const { tenantId, role, email, name: userName } = req.user;
+        const headerTenantId = req.headers['x-tenant-id'];
+
+        let where = {};
+        if (role !== 'SUPER_ADMIN') {
+            // Logic for BRANCH_ADMIN and MANAGER
+            const branches = await prisma.tenant.findMany({
+                where: {
+                    OR: [
+                        { id: tenantId || undefined },
+                        { owner: email || undefined },
+                        { owner: userName || undefined }
+                    ].filter(cond => Object.values(cond)[0] !== undefined)
+                },
+                select: { id: true }
+            });
+            const managedBranchIds = branches.map(b => b.id);
+
+            if (headerTenantId && headerTenantId !== 'all') {
+                const hId = parseInt(headerTenantId);
+                if (managedBranchIds.includes(hId)) {
+                    where.tenantId = hId;
+                } else {
+                    where.tenantId = { in: managedBranchIds };
+                }
+            } else {
+                where.tenantId = { in: managedBranchIds };
+            }
+        } else {
+            // Logic for SUPER_ADMIN
+            if (headerTenantId && headerTenantId !== 'all') {
+                where.tenantId = parseInt(headerTenantId);
+            }
+        }
+
+        const devices = await prisma.device.findMany({
+            where,
+            orderBy: { lastSeen: 'desc' }
+        });
         res.json(devices);
     } catch (error) {
+        console.error('getDevices Error:', error);
         res.status(500).json({ message: error.message });
     }
 };
 
 const addDevice = async (req, res) => {
     try {
-        const { name, type, ip, status } = req.body;
-        const newDevice = await prisma.device.create({
-            data: {
-                name,
-                type,
-                ipAddress: ip,
-                status
-            }
-        });
-        res.status(201).json(newDevice);
+        const { name, type, ip, status, branchId } = req.body;
+        const { tenantId: userTenantId, role, email, name: userName } = req.user;
+
+        // Logic to determine target branches
+        let targetBranchIds = [];
+        // Prioritize explicit branchId from body, then fallback to header
+        const effectiveBranchId = branchId || req.headers['x-tenant-id'];
+
+        if (effectiveBranchId === 'all') {
+            const branches = await prisma.tenant.findMany({
+                where: role === 'SUPER_ADMIN' ? {} : {
+                    OR: [
+                        { id: userTenantId || undefined },
+                        { owner: email || undefined },
+                        { owner: userName || undefined }
+                    ].filter(cond => Object.values(cond)[0] !== undefined)
+                },
+                select: { id: true }
+            });
+            targetBranchIds = branches.map(b => b.id);
+        } else if (effectiveBranchId && effectiveBranchId !== 'all') {
+            targetBranchIds = [parseInt(effectiveBranchId)];
+        } else if (userTenantId) {
+            targetBranchIds = [userTenantId];
+        }
+
+        if (targetBranchIds.length === 0) {
+            return res.status(400).json({ message: 'No valid branches found' });
+        }
+
+        const createdDevices = await Promise.all(targetBranchIds.map(tId =>
+            prisma.device.create({
+                data: {
+                    name: targetBranchIds.length > 1 ? `${name} (${tId})` : name,
+                    type,
+                    ipAddress: ip,
+                    status: status || 'Online',
+                    tenantId: tId
+                }
+            })
+        ));
+
+        res.status(201).json(createdDevices.length === 1 ? createdDevices[0] : { message: 'Devices added successfully', count: createdDevices.length });
     } catch (error) {
+        console.error('addDevice Error:', error);
         res.status(500).json({ message: error.message });
     }
 };
