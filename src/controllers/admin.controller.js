@@ -351,6 +351,18 @@ const updateMember = async (req, res) => {
 const deleteMember = async (req, res) => {
     try {
         const { id } = req.params;
+        const { role, tenantId, email, name: userName } = req.user;
+
+        const member = await prisma.member.findUnique({ where: { id: parseInt(id) } });
+        if (!member) return res.status(404).json({ message: 'Member not found' });
+
+        if (role !== 'SUPER_ADMIN' && member.tenantId !== tenantId) {
+            const isOwner = await prisma.tenant.findFirst({
+                where: { id: member.tenantId, OR: [{ owner: email }, { owner: userName }] }
+            });
+            if (!isOwner) return res.status(403).json({ message: 'Not authorized to delete this member' });
+        }
+
         await prisma.member.delete({ where: { id: parseInt(id) } });
         res.json({ message: 'Member deleted successfully' });
     } catch (error) {
@@ -1104,6 +1116,18 @@ const getCheckIns = async (req, res) => {
 const deleteCheckIn = async (req, res) => {
     try {
         const { id } = req.params;
+        const { role, tenantId, email, name: userName } = req.user;
+
+        const attendance = await prisma.attendance.findUnique({ where: { id: parseInt(id) } });
+        if (!attendance) return res.status(404).json({ message: 'Attendance record not found' });
+
+        if (role !== 'SUPER_ADMIN' && attendance.tenantId !== tenantId) {
+            const isOwner = await prisma.tenant.findFirst({
+                where: { id: attendance.tenantId, OR: [{ owner: email }, { owner: userName }] }
+            });
+            if (!isOwner) return res.status(403).json({ message: 'Not authorized to delete this attendance record' });
+        }
+
         await prisma.attendance.delete({ where: { id: parseInt(id) } });
         res.json({ message: 'Attendance record deleted' });
     } catch (error) {
@@ -1432,6 +1456,18 @@ const getTaskById = async (req, res) => {
 const deleteTask = async (req, res) => {
     try {
         const { id } = req.params;
+        const { role, tenantId, email, name: userName } = req.user;
+
+        const task = await prisma.task.findUnique({ where: { id: parseInt(id) } });
+        if (!task) return res.status(404).json({ message: 'Task not found' });
+
+        if (role !== 'SUPER_ADMIN' && task.tenantId !== tenantId) {
+            const isOwner = await prisma.tenant.findFirst({
+                where: { id: task.tenantId, OR: [{ owner: email }, { owner: userName }] }
+            });
+            if (!isOwner) return res.status(403).json({ message: 'Not authorized to delete this task' });
+        }
+
         await prisma.task.delete({ where: { id: parseInt(id) } });
         res.json({ message: 'Task deleted successfully' });
     } catch (error) {
@@ -1758,6 +1794,18 @@ const updatePlan = async (req, res) => {
 const deletePlan = async (req, res) => {
     try {
         const { id } = req.params;
+        const { role, tenantId, email, name: userName } = req.user;
+
+        const plan = await prisma.membershipPlan.findUnique({ where: { id: parseInt(id) } });
+        if (!plan) return res.status(404).json({ message: 'Plan not found' });
+
+        if (role !== 'SUPER_ADMIN' && plan.tenantId !== tenantId) {
+            const isOwner = await prisma.tenant.findFirst({
+                where: { id: plan.tenantId, OR: [{ owner: email }, { owner: userName }] }
+            });
+            if (!isOwner) return res.status(403).json({ message: 'Not authorized to delete this plan' });
+        }
+
         await prisma.membershipPlan.delete({
             where: { id: parseInt(id) }
         });
@@ -2030,6 +2078,17 @@ const deleteClass = async (req, res) => {
     try {
         const { id } = req.params;
         const classId = parseInt(id);
+        const { role, tenantId, email, name: userName } = req.user;
+
+        const cls = await prisma.class.findUnique({ where: { id: classId } });
+        if (!cls) return res.status(404).json({ message: 'Class not found' });
+
+        if (role !== 'SUPER_ADMIN' && cls.tenantId !== tenantId) {
+            const isOwner = await prisma.tenant.findFirst({
+                where: { id: cls.tenantId, OR: [{ owner: email }, { owner: userName }] }
+            });
+            if (!isOwner) return res.status(403).json({ message: 'Not authorized to delete this class' });
+        }
 
         // Delete associated bookings first, then the class
         await prisma.$transaction([
